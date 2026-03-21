@@ -1,13 +1,17 @@
 import { NextResponse } from 'next/server';
 import { format, subDays } from 'date-fns';
 import { getSupabaseServerClient } from '@/lib/db';
-import { getStockPrices } from '@/lib/financial-datasets';
+import { getStockPrices, FDApiError } from '@/lib/financial-datasets';
 import { computeAllIndicators, computePercentileRank } from '@/lib/indicators';
 import { computeAndStoreScores } from '@/lib/scoring';
 import { detectAlerts, recordAlert } from '@/lib/alerts';
 import { snapshotSignal } from '@/lib/signals';
 import { analyzeStock } from '@/lib/analyzers/sentiment';
 import { isLLMAvailable } from '@/lib/llm';
+import {
+  createPipelineRun, startStep, finishStep, logStepError,
+  finishRun, savePipelineRun,
+} from '@/lib/pipeline-log';
 import type { PriceBar, Fundamentals, TechnicalSignals } from '@/lib/utils/types';
 
 export const maxDuration = 300;
@@ -17,9 +21,9 @@ function verifyCron(request: Request): boolean {
   return secret === process.env.CRON_SECRET;
 }
 
-const results: Record<string, unknown> = {};
+async function step1_fetchPrices(run: ReturnType<typeof createPipelineRun>) {
+  const step = startStep(run, 'fetch_prices');
 
-async function step1_fetchPrices() {
   const db = getSupabaseServerClient();
   const { data: stocks } = await db
     .from('stocks')
@@ -27,7 +31,10 @@ async function step1_fetchPrices() {
     .eq('is_active', true)
     .order('symbol');
 
-  if (!stocks) return;
+  if (!stocks) {
+    finishStep(run, 'fetch_prices', 'skipped', { stocks: 0 });
+    return;
+  }
 
   const endDate = format(new Date(), 'yyyy-MM-dd');
   const startDate = format(subDays(new Date(), 5), 'yyyy-MM-dd');
@@ -53,25 +60,38 @@ async function step1_fetchPrices() {
       const { error } = await db
         .from('daily_prices')
         .upsert(rows, { onConflict: 'symbol,date' });
-      if (error) errors++;
-      else inserted += rows.length;
-    } catch {
+      if (error) {
+        errors++;
+        logStepError(run, 'fetch_prices', symbol, error.message);
+      } else {
+        inserted += rows.length;
+      }
+    } catch (err) {
       errors++;
+      logStepError(run, 'fetch_prices', symbol, err instanceof Error ? err.message : String(err));
+      if (err instanceof FDApiError && err.category === 'circuit_open') break;
     }
   }
 
-  results.prices = { inserted, errors, stocks: stocks.length };
+  finishStep(run, 'fetch_prices', errors > 0 ? 'error' : 'success', {
+    inserted, errors, stocks: stocks.length,
+  });
 }
 
-async function step2_computeTechnicals() {
-  const db = getSupabaseServerClient();
+async function step2_computeTechnicals(run: ReturnType<typeof createPipelineRun>) {
+  const step = startStep(run, 'compute_technicals');
 
+  const db = getSupabaseServerClient();
   const { data: stocks } = await db
     .from('stocks')
     .select('symbol, sector')
     .eq('is_active', true)
     .order('symbol');
-  if (!stocks) return;
+
+  if (!stocks) {
+    finishStep(run, 'compute_technicals', 'skipped', { stocks: 0 });
+    return;
+  }
 
   const { data: spyPrices } = await db
     .from('daily_prices')
@@ -85,79 +105,81 @@ async function step2_computeTechnicals() {
   let signalsDetected = 0;
 
   for (const { symbol, sector } of stocks) {
-    const [pricesRes, prevTechRes] = await Promise.all([
-      db.from('daily_prices')
-        .select('date, open, high, low, close, volume')
-        .eq('symbol', symbol)
-        .order('date', { ascending: true }),
-      db.from('technical_signals')
-        .select('rsi_14')
-        .eq('symbol', symbol)
-        .single(),
-    ]);
+    try {
+      const [pricesRes, prevTechRes] = await Promise.all([
+        db.from('daily_prices')
+          .select('date, open, high, low, close, volume')
+          .eq('symbol', symbol)
+          .order('date', { ascending: true }),
+        db.from('technical_signals')
+          .select('rsi_14')
+          .eq('symbol', symbol)
+          .single(),
+      ]);
 
-    if (!pricesRes.data || pricesRes.data.length < 20) continue;
+      if (!pricesRes.data || pricesRes.data.length < 20) continue;
 
-    const prevRsi = prevTechRes.data?.rsi_14 != null
-      ? Number(prevTechRes.data.rsi_14)
-      : null;
+      const prevRsi = prevTechRes.data?.rsi_14 != null
+        ? Number(prevTechRes.data.rsi_14)
+        : null;
 
-    const prices: PriceBar[] = pricesRes.data.map((p) => ({
-      date: p.date as string,
-      open: Number(p.open),
-      high: Number(p.high),
-      low: Number(p.low),
-      close: Number(p.close),
-      volume: Number(p.volume),
-    }));
+      const prices: PriceBar[] = pricesRes.data.map((p) => ({
+        date: p.date as string,
+        open: Number(p.open),
+        high: Number(p.high),
+        low: Number(p.low),
+        close: Number(p.close),
+        volume: Number(p.volume),
+      }));
 
-    const indicators = computeAllIndicators(prices, spyCloses);
-    const { rs_raw_3m, rs_raw_6m, rs_raw_12m, ...dbIndicators } = indicators;
-    allRsRaw.push({ symbol, rs3m: rs_raw_3m, rs6m: rs_raw_6m, rs12m: rs_raw_12m });
+      const indicators = computeAllIndicators(prices, spyCloses);
+      const { rs_raw_3m, rs_raw_6m, rs_raw_12m, ...dbIndicators } = indicators;
+      allRsRaw.push({ symbol, rs3m: rs_raw_3m, rs6m: rs_raw_6m, rs12m: rs_raw_12m });
 
-    await db.from('technical_signals').upsert({
-      symbol,
-      ...dbIndicators,
-      rs_rank_3m: null,
-      rs_rank_6m: null,
-      rs_rank_12m: null,
-      computed_at: new Date().toISOString(),
-    }, { onConflict: 'symbol' });
-
-    // RSI Oversold Bounce: previous RSI < 30 and new RSI >= 30
-    const newRsi = dbIndicators.rsi_14;
-    if (prevRsi != null && newRsi != null && prevRsi < 30 && newRsi >= 30) {
-      const currentPrice = prices[prices.length - 1].close;
-
-      const { data: scoreRow } = await db
-        .from('sentinel_scores')
-        .select('sentinel_score, technical_score, fundamental_score, earnings_ai_score, insider_score, institutional_score, news_sentiment_score, options_flow_score')
-        .eq('symbol', symbol)
-        .single();
-
-      await snapshotSignal({
+      await db.from('technical_signals').upsert({
         symbol,
-        triggerType: 'rsi_oversold_bounce',
-        triggerDetail: `RSI bounced from ${prevRsi.toFixed(1)} to ${newRsi.toFixed(1)}`,
-        priceAtSignal: currentPrice,
-        sentinelScore: scoreRow?.sentinel_score != null ? Number(scoreRow.sentinel_score) : null,
-        technicalScore: scoreRow?.technical_score != null ? Number(scoreRow.technical_score) : null,
-        fundamentalScore: scoreRow?.fundamental_score != null ? Number(scoreRow.fundamental_score) : null,
-        earningsAiScore: scoreRow?.earnings_ai_score != null ? Number(scoreRow.earnings_ai_score) : null,
-        insiderScore: scoreRow?.insider_score != null ? Number(scoreRow.insider_score) : null,
-        institutionalScore: scoreRow?.institutional_score != null ? Number(scoreRow.institutional_score) : null,
-        newsSentimentScore: scoreRow?.news_sentiment_score != null ? Number(scoreRow.news_sentiment_score) : null,
-        optionsFlowScore: scoreRow?.options_flow_score != null ? Number(scoreRow.options_flow_score) : null,
-        sector: sector as string | null,
-      });
+        ...dbIndicators,
+        rs_rank_3m: null,
+        rs_rank_6m: null,
+        rs_rank_12m: null,
+        computed_at: new Date().toISOString(),
+      }, { onConflict: 'symbol' });
 
-      signalsDetected++;
+      const newRsi = dbIndicators.rsi_14;
+      if (prevRsi != null && newRsi != null && prevRsi < 30 && newRsi >= 30) {
+        const currentPrice = prices[prices.length - 1].close;
+
+        const { data: scoreRow } = await db
+          .from('sentinel_scores')
+          .select('sentinel_score, technical_score, fundamental_score, earnings_ai_score, insider_score, institutional_score, news_sentiment_score, options_flow_score')
+          .eq('symbol', symbol)
+          .single();
+
+        await snapshotSignal({
+          symbol,
+          triggerType: 'rsi_oversold_bounce',
+          triggerDetail: `RSI bounced from ${prevRsi.toFixed(1)} to ${newRsi.toFixed(1)}`,
+          priceAtSignal: currentPrice,
+          sentinelScore: scoreRow?.sentinel_score != null ? Number(scoreRow.sentinel_score) : null,
+          technicalScore: scoreRow?.technical_score != null ? Number(scoreRow.technical_score) : null,
+          fundamentalScore: scoreRow?.fundamental_score != null ? Number(scoreRow.fundamental_score) : null,
+          earningsAiScore: scoreRow?.earnings_ai_score != null ? Number(scoreRow.earnings_ai_score) : null,
+          insiderScore: scoreRow?.insider_score != null ? Number(scoreRow.insider_score) : null,
+          institutionalScore: scoreRow?.institutional_score != null ? Number(scoreRow.institutional_score) : null,
+          newsSentimentScore: scoreRow?.news_sentiment_score != null ? Number(scoreRow.news_sentiment_score) : null,
+          optionsFlowScore: scoreRow?.options_flow_score != null ? Number(scoreRow.options_flow_score) : null,
+          sector: sector as string | null,
+        });
+
+        signalsDetected++;
+      }
+
+      techComputed++;
+    } catch (err) {
+      logStepError(run, 'compute_technicals', symbol, err instanceof Error ? err.message : String(err));
     }
-
-    techComputed++;
   }
 
-  // RS rankings
   const all3m = allRsRaw.map((r) => r.rs3m).filter((v): v is number => v != null);
   const all6m = allRsRaw.map((r) => r.rs6m).filter((v): v is number => v != null);
   const all12m = allRsRaw.map((r) => r.rs12m).filter((v): v is number => v != null);
@@ -172,18 +194,23 @@ async function step2_computeTechnicals() {
 
   const scoreResult = await computeAndStoreScores();
 
-  results.technicals = { computed: techComputed, rsi_bounces: signalsDetected };
-  results.scores = { computed: scoreResult.computed, errors: scoreResult.errors };
+  finishStep(run, 'compute_technicals', 'success', {
+    technicals_computed: techComputed,
+    rsi_bounces: signalsDetected,
+    scores_computed: scoreResult.computed,
+    score_errors: scoreResult.errors,
+  });
 }
 
-async function step3_aiAnalysis() {
+async function step3_aiAnalysis(run: ReturnType<typeof createPipelineRun>) {
+  const step = startStep(run, 'ai_analysis');
+
   if (!isLLMAvailable()) {
-    results.ai = { skipped: true, reason: 'No LLM provider configured' };
+    finishStep(run, 'ai_analysis', 'skipped', { reason_no_llm: 1 });
     return;
   }
 
   const db = getSupabaseServerClient();
-
   const { data: movers } = await db
     .from('sentinel_scores')
     .select('symbol, score_change_1d, stocks!inner(name, sector)')
@@ -193,7 +220,7 @@ async function step3_aiAnalysis() {
 
   const symbols = (movers ?? []).map((m) => m.symbol as string);
   if (symbols.length === 0) {
-    results.ai = { analyzed: 0, message: 'No movers' };
+    finishStep(run, 'ai_analysis', 'skipped', { movers: 0 });
     return;
   }
 
@@ -238,28 +265,40 @@ async function step3_aiAnalysis() {
       }, { onConflict: 'symbol,fiscal_quarter' });
 
       analyzed++;
-    } catch {
+    } catch (err) {
       errors++;
+      logStepError(run, 'ai_analysis', sym, err instanceof Error ? err.message : String(err));
     }
   }
 
-  results.ai = { analyzed, errors, total: symbols.length };
+  finishStep(run, 'ai_analysis', errors > 0 ? 'error' : 'success', {
+    analyzed, errors, total: symbols.length,
+  });
 }
 
-async function step4_alerts() {
-  const alerts = await detectAlerts();
-  let recorded = 0;
+async function step4_alerts(run: ReturnType<typeof createPipelineRun>) {
+  const step = startStep(run, 'detect_alerts');
 
-  for (const alert of alerts) {
-    try {
-      await recordAlert(alert);
-      recorded++;
-    } catch {
-      // continue
+  try {
+    const alerts = await detectAlerts();
+    let recorded = 0;
+
+    for (const alert of alerts) {
+      try {
+        await recordAlert(alert);
+        recorded++;
+      } catch (err) {
+        logStepError(run, 'detect_alerts', alert.symbol, err instanceof Error ? err.message : String(err));
+      }
     }
-  }
 
-  results.alerts = { detected: alerts.length, recorded };
+    finishStep(run, 'detect_alerts', 'success', {
+      detected: alerts.length, recorded,
+    });
+  } catch (err) {
+    logStepError(run, 'detect_alerts', undefined, err instanceof Error ? err.message : String(err));
+    finishStep(run, 'detect_alerts', 'error');
+  }
 }
 
 export async function GET(request: Request) {
@@ -267,14 +306,15 @@ export async function GET(request: Request) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
   }
 
-  const start = Date.now();
+  const run = createPipelineRun('cron');
 
-  await step1_fetchPrices();
-  await step2_computeTechnicals();
-  await step3_aiAnalysis();
-  await step4_alerts();
+  await step1_fetchPrices(run);
+  await step2_computeTechnicals(run);
+  await step3_aiAnalysis(run);
+  await step4_alerts(run);
 
-  results.elapsed_ms = Date.now() - start;
+  finishRun(run);
+  await savePipelineRun(run);
 
-  return NextResponse.json(results);
+  return NextResponse.json(run);
 }

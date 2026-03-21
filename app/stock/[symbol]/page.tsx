@@ -1,7 +1,10 @@
 import { notFound } from 'next/navigation';
 import { getSupabaseServerClient } from '@/lib/db';
+import { getSECFilings } from '@/lib/financial-datasets';
 import { detectTechnicalFlags } from '@/lib/analyzers/technical';
 import { detectFundamentalFlags } from '@/lib/analyzers/fundamental';
+import { detectInsiderFlags } from '@/lib/analyzers/insider';
+import { detectAllSignals } from '@/lib/analyzers/signals';
 import type { TechnicalSignals, Fundamentals } from '@/lib/utils/types';
 import { StockDetail } from './StockDetail';
 
@@ -49,6 +52,23 @@ export default async function StockPage({ params }: Props) {
 
   const technicalFlags = technicals ? detectTechnicalFlags(technicals) : [];
   const fundamentalFlags = fundamentals ? detectFundamentalFlags(fundamentals) : [];
+  const insiderFlags = detectInsiderFlags(insiderTrades, prices);
+
+  // Fetch SEC filings for signal detection (best-effort, don't block page on failure)
+  let filings: import('@/lib/utils/types').FDSECFiling[] = [];
+  try {
+    filings = await getSECFilings(sym, { limit: 20 });
+  } catch {
+    // SEC filings are supplemental — page still renders without them
+  }
+
+  const signals = detectAllSignals({
+    symbol: sym,
+    prices,
+    filings,
+    insiderTrades,
+    marketCap: stock.market_cap ? Number(stock.market_cap) : null,
+  });
 
   const latestPrice = prices.length > 0 ? prices[prices.length - 1] : null;
   const prevPrice = prices.length > 1 ? prices[prices.length - 2] : null;
@@ -66,6 +86,8 @@ export default async function StockPage({ params }: Props) {
       insiderTrades={insiderTrades}
       technicalFlags={technicalFlags}
       fundamentalFlags={fundamentalFlags}
+      insiderFlags={insiderFlags}
+      signals={signals}
       latestPrice={latestPrice}
       priceChange={priceChange}
     />

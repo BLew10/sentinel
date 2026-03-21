@@ -1,4 +1,4 @@
-import type { PriceBar, MACDResult, FiftyTwoWeekRange } from './utils/types';
+import type { PriceBar, MACDResult, FiftyTwoWeekRange, VolumeAnomaly, PriceSpikeReversal } from './utils/types';
 
 /**
  * All indicator functions expect prices sorted oldest-first (chronological).
@@ -282,4 +282,104 @@ export function computeAllIndicators(
     rs_raw_6m,
     rs_raw_12m,
   };
+}
+
+/**
+ * Scan price history for volume anomalies — days where volume far exceeds
+ * the trailing 50-day average. Requires at least 51 bars (50 for the average
+ * + 1 bar to evaluate). Returns anomalies sorted by severity descending.
+ */
+export function detectVolumeAnomalies(
+  bars: PriceBar[],
+  symbol: string,
+): VolumeAnomaly[] {
+  const MIN_HISTORY = 51;
+  if (bars.length < MIN_HISTORY) return [];
+
+  const anomalies: VolumeAnomaly[] = [];
+
+  for (let i = 50; i < bars.length; i++) {
+    const trailingSlice = bars.slice(i - 50, i);
+    const avgVolume = trailingSlice.reduce((sum, b) => sum + b.volume, 0) / 50;
+
+    if (avgVolume === 0) continue;
+
+    const ratio = bars[i].volume / avgVolume;
+    let severity: VolumeAnomaly['anomaly_severity'] = 'none';
+    if (ratio >= 50) severity = 'extreme';
+    else if (ratio >= 10) severity = 'high';
+    else if (ratio >= 5) severity = 'moderate';
+
+    if (severity !== 'none') {
+      anomalies.push({
+        symbol,
+        date: bars[i].date,
+        volume: bars[i].volume,
+        avg_volume_50d: Math.round(avgVolume),
+        volume_ratio: Math.round(ratio * 10) / 10,
+        is_anomaly: true,
+        anomaly_severity: severity,
+      });
+    }
+  }
+
+  const severityOrder: Record<string, number> = { extreme: 0, high: 1, moderate: 2 };
+  anomalies.sort((a, b) => severityOrder[a.anomaly_severity] - severityOrder[b.anomaly_severity]);
+
+  return anomalies;
+}
+
+/**
+ * Detect a price spike + reversal pattern: stock up >100% within any 10-day
+ * window in the last 30 trading days, then reversed >20% from the peak.
+ * Returns the most extreme spike found, or null.
+ */
+export function detectPriceSpikeReversal(
+  bars: PriceBar[],
+): PriceSpikeReversal | null {
+  if (bars.length < 12) return null;
+
+  const recent = bars.slice(-30);
+  if (recent.length < 2) return null;
+
+  const currentPrice = recent[recent.length - 1].close;
+  let bestSpike: PriceSpikeReversal | null = null;
+
+  for (let i = 0; i < recent.length - 1; i++) {
+    const startPrice = recent[i].close;
+    if (startPrice <= 0) continue;
+
+    const windowEnd = Math.min(i + 10, recent.length - 1);
+
+    let peakPrice = startPrice;
+    let peakIdx = i;
+
+    for (let j = i + 1; j <= windowEnd; j++) {
+      if (recent[j].high > peakPrice) {
+        peakPrice = recent[j].high;
+        peakIdx = j;
+      }
+    }
+
+    const spikePct = (peakPrice - startPrice) / startPrice;
+    if (spikePct < 1.0) continue;
+
+    const reversalPct = peakPrice > 0 ? (peakPrice - currentPrice) / peakPrice : 0;
+    if (reversalPct < 0.2) continue;
+
+    if (!bestSpike || spikePct > bestSpike.spike_pct) {
+      bestSpike = {
+        spike_start_date: recent[i].date,
+        spike_peak_date: recent[peakIdx].date,
+        spike_start_price: startPrice,
+        spike_peak_price: peakPrice,
+        current_price: currentPrice,
+        spike_pct: Math.round(spikePct * 1000) / 10,
+        reversal_pct: Math.round(reversalPct * 1000) / 10,
+        days_to_peak: peakIdx - i,
+      };
+    }
+  }
+
+  return bestSpike;
 }

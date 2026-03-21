@@ -1,4 +1,5 @@
 import { FINANCIAL_DATASETS_BASE_URL, RATE_LIMIT_DELAY_MS } from './utils/constants';
+import { withRetry } from './utils/retry';
 import type {
   FDStockPrice,
   FDCompanyFacts,
@@ -10,6 +11,7 @@ import type {
   FDFinancialMetricsSnapshot,
   FDSECFiling,
   FDNewsArticle,
+  ErrorCategory,
 } from './utils/types';
 
 const BASE = FINANCIAL_DATASETS_BASE_URL;
@@ -28,25 +30,23 @@ async function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-let lastRequestTime = 0;
+// ── Error Classification ────────────────────────────────────
 
-async function rateLimitedFetch(url: string): Promise<Response> {
-  const now = Date.now();
-  const elapsed = now - lastRequestTime;
-  if (elapsed < RATE_LIMIT_DELAY_MS) {
-    await sleep(RATE_LIMIT_DELAY_MS - elapsed);
-  }
-  lastRequestTime = Date.now();
+export function classifyApiError(status: number): ErrorCategory {
+  if (status === 401 || status === 403) return 'auth';
+  if (status === 429) return 'rate_limit';
+  if (status === 404) return 'not_found';
+  if (status >= 500) return 'server_error';
+  return 'unknown';
+}
 
-  const res = await fetch(url, { headers: headers() });
-  if (!res.ok) {
-    const body = await res.text().catch(() => '');
-    throw new FDApiError(res.status, `Financial Datasets API error ${res.status}: ${body}`, url);
-  }
-  return res;
+function isRetryableCategory(category: ErrorCategory): boolean {
+  return category === 'rate_limit' || category === 'server_error';
 }
 
 export class FDApiError extends Error {
+  public category: ErrorCategory;
+
   constructor(
     public status: number,
     message: string,
@@ -54,6 +54,61 @@ export class FDApiError extends Error {
   ) {
     super(message);
     this.name = 'FDApiError';
+    this.category = status === 0 ? 'circuit_open' : classifyApiError(status);
+  }
+}
+
+// ── Circuit Breaker ─────────────────────────────────────────
+
+const CIRCUIT_BREAKER_THRESHOLD = 5;
+let consecutiveFailures = 0;
+
+export function getCircuitBreakerState(): { open: boolean; failures: number; threshold: number } {
+  return { open: consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD, failures: consecutiveFailures, threshold: CIRCUIT_BREAKER_THRESHOLD };
+}
+
+export function resetCircuitBreaker(): void {
+  consecutiveFailures = 0;
+}
+
+// ── Rate-Limited Fetch with Retry + Circuit Breaker ─────────
+
+let lastRequestTime = 0;
+
+async function rateLimitedFetch(url: string): Promise<Response> {
+  if (consecutiveFailures >= CIRCUIT_BREAKER_THRESHOLD) {
+    throw new FDApiError(0, `Circuit breaker open after ${consecutiveFailures} consecutive failures`, url);
+  }
+
+  const now = Date.now();
+  const elapsed = now - lastRequestTime;
+  if (elapsed < RATE_LIMIT_DELAY_MS) {
+    await sleep(RATE_LIMIT_DELAY_MS - elapsed);
+  }
+  lastRequestTime = Date.now();
+
+  try {
+    const res = await withRetry(
+      async () => {
+        const response = await fetch(url, { headers: headers() });
+        if (!response.ok) {
+          const body = await response.text().catch(() => '');
+          throw new FDApiError(response.status, `Financial Datasets API error ${response.status}: ${body}`, url);
+        }
+        return response;
+      },
+      {
+        maxRetries: 2,
+        baseDelayMs: 1000,
+        shouldRetry: (err) => err instanceof FDApiError && isRetryableCategory(err.category),
+      },
+    );
+
+    consecutiveFailures = 0;
+    return res;
+  } catch (err) {
+    consecutiveFailures++;
+    throw err;
   }
 }
 

@@ -40,6 +40,16 @@ const FLAG_META: Record<string, { label: string; color: 'green' | 'red' | 'amber
   CONTRARIAN_BUY: { label: 'Contrarian', color: 'purple', tooltip: 'Insider buying while the stock is falling — they\'re betting the decline is overdone' },
   FIRST_BUY_12MO: { label: 'First Buy', color: 'cyan', tooltip: 'First insider buy in 12+ months — something changed to motivate buying' },
   ACCELERATING_SELLS: { label: 'Accel Sells', color: 'red', tooltip: 'Insider selling pace increasing — growing urgency to exit' },
+
+  // Signal detection
+  VOLUME_SPIKE: { label: 'Vol Spike', color: 'cyan', tooltip: '10x+ normal volume — extreme unusual activity detected' },
+  EXTREME_VOLUME_SPIKE: { label: 'Extreme Vol', color: 'red', tooltip: '50x+ normal volume — something major is happening with this stock' },
+  DILUTION_FILING: { label: 'Dilution', color: 'red', tooltip: 'SEC filing indicates a stock offering — typically dilutive to shareholders' },
+  '13D_AMENDMENT': { label: '13D Filing', color: 'amber', tooltip: 'Major shareholder (5%+) changing position — watch for activist activity' },
+  INSIDER_FORM4: { label: 'Form 4', color: 'cyan', tooltip: 'Insider ownership change reported to the SEC' },
+  INSIDER_FILING_NEAR_SPIKE: { label: 'Insider+Spike', color: 'purple', tooltip: 'Insider filing within 2 days of a volume anomaly — warrants investigation' },
+  PRICE_SPIKE_REVERSAL: { label: 'Spike Reversal', color: 'red', tooltip: 'Stock spiked 100%+ then reversed 20%+ — potential blow-off top pattern' },
+  PENNY_STOCK_WARNING: { label: 'Penny Stock', color: 'red', tooltip: 'Price under $5 with small market cap — higher volatility and risk' },
 };
 
 const COLOR_CLASSES: Record<string, string> = {

@@ -569,6 +569,19 @@ export interface FDNewsArticle {
 }
 
 // ============================================
+// ERROR TYPES
+// ============================================
+
+export type ErrorCategory =
+  | 'auth'
+  | 'rate_limit'
+  | 'not_found'
+  | 'server_error'
+  | 'network'
+  | 'circuit_open'
+  | 'unknown';
+
+// ============================================
 // AI / LLM TYPES
 // ============================================
 
@@ -677,4 +690,50 @@ export interface FiftyTwoWeekRange {
   low: number;
   pct_from_high: number;
   pct_from_low: number;
+}
+
+// ============================================
+// SIGNAL DETECTION TYPES
+// ============================================
+
+export interface VolumeAnomaly {
+  symbol: string;
+  date: string;
+  volume: number;
+  avg_volume_50d: number;
+  volume_ratio: number;
+  is_anomaly: boolean;
+  anomaly_severity: 'extreme' | 'high' | 'moderate' | 'none';
+}
+
+export type FilingFlagType = 'DILUTION_FILING' | '13D_AMENDMENT' | 'INSIDER_FORM4';
+
+export interface FilingFlag {
+  type: FilingFlagType;
+  filing: FDSECFiling;
+}
+
+export interface PriceSpikeReversal {
+  spike_start_date: string;
+  spike_peak_date: string;
+  spike_start_price: number;
+  spike_peak_price: number;
+  current_price: number;
+  spike_pct: number;
+  reversal_pct: number;
+  days_to_peak: number;
+}
+
+export type SignalSeverity = 'HIGH' | 'WATCH' | 'CAUTION' | 'RISK' | 'INVESTIGATE';
+export type SignalDirection = 'bullish' | 'bearish' | 'neutral';
+
+export interface DetectedSignal {
+  id: string;
+  type: string;
+  label: string;
+  severity: SignalSeverity;
+  direction: SignalDirection;
+  description: string;
+  date: string;
+  icon: string;
 }

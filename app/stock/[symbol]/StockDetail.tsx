@@ -7,9 +7,10 @@ import { FlagChip } from '@/components/ui/FlagChip';
 import { PriceChart } from './PriceChart';
 import { ScoreRadar } from './ScoreRadar';
 import { formatCurrency, formatPercent, formatMarketCap, generateActionSummary, scoreVerdict, verdictColor, verdictBgColor } from '@/lib/utils/format';
+import { SignalsPanel } from './SignalsPanel';
 import type { TechnicalFlag } from '@/lib/analyzers/technical';
 import type { FundamentalFlag } from '@/lib/analyzers/fundamental';
-import type { Fundamentals, TechnicalSignals, SentinelScore, InsiderTrade } from '@/lib/utils/types';
+import type { Fundamentals, TechnicalSignals, SentinelScore, InsiderTrade, InsiderFlag, DetectedSignal } from '@/lib/utils/types';
 
 interface PriceBar {
   date: string;
@@ -29,6 +30,8 @@ interface Props {
   insiderTrades: InsiderTrade[];
   technicalFlags: TechnicalFlag[];
   fundamentalFlags: FundamentalFlag[];
+  insiderFlags: InsiderFlag[];
+  signals: DetectedSignal[];
   latestPrice: PriceBar | null;
   priceChange: { absolute: number; percent: number } | null;
 }
@@ -152,6 +155,8 @@ function buildAgentPrompt(
   insiderTrades: InsiderTrade[],
   technicalFlags: TechnicalFlag[],
   fundamentalFlags: FundamentalFlag[],
+  insiderFlags: InsiderFlag[],
+  signals: DetectedSignal[],
   latestPrice: PriceBar | null,
 ): string {
   const lines: string[] = [];
@@ -175,10 +180,19 @@ function buildAgentPrompt(
     lines.push('');
   }
 
-  if (technicalFlags.length > 0 || fundamentalFlags.length > 0) {
+  if (technicalFlags.length > 0 || fundamentalFlags.length > 0 || insiderFlags.length > 0) {
     lines.push('## Active Flags');
     for (const f of technicalFlags) lines.push(`- [TECHNICAL] ${f}`);
     for (const f of fundamentalFlags) lines.push(`- [FUNDAMENTAL] ${f}`);
+    for (const f of insiderFlags) lines.push(`- [INSIDER] ${f}`);
+    lines.push('');
+  }
+
+  if (signals.length > 0) {
+    lines.push('## Detected Signals');
+    for (const s of signals) {
+      lines.push(`- ${s.icon} [${s.severity}] ${s.label} — ${s.description} (${s.date})`);
+    }
     lines.push('');
   }
 
@@ -281,11 +295,12 @@ function CopyPromptButton({ getText }: { getText: () => string }) {
 
 export function StockDetail({
   stock, prices, fundamentals, technicals, scores,
-  insiderTrades, technicalFlags, fundamentalFlags, latestPrice, priceChange,
+  insiderTrades, technicalFlags, fundamentalFlags, insiderFlags, signals,
+  latestPrice, priceChange,
 }: Props) {
   const [activeTab, setActiveTab] = useState<Tab>('Overview');
 
-  const allFlags = [...technicalFlags, ...fundamentalFlags];
+  const allFlags = [...technicalFlags, ...fundamentalFlags, ...insiderFlags];
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
@@ -322,7 +337,7 @@ export function StockDetail({
             </div>
           )}
           <CopyPromptButton
-            getText={() => buildAgentPrompt(stock, prices, fundamentals, technicals, scores, insiderTrades, technicalFlags, fundamentalFlags, latestPrice)}
+            getText={() => buildAgentPrompt(stock, prices, fundamentals, technicals, scores, insiderTrades, technicalFlags, fundamentalFlags, insiderFlags, signals, latestPrice)}
           />
           <ScoreBadge score={n(scores?.sentinel_score)} size="lg" />
         </div>
@@ -370,6 +385,9 @@ export function StockDetail({
         technicalFlags={technicalFlags}
         fundamentalFlags={fundamentalFlags}
       />
+
+      {/* Detected Signals */}
+      <SignalsPanel signals={signals} />
 
       {/* Price Chart + Score Radar */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">

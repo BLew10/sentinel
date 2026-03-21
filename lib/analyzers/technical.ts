@@ -24,7 +24,10 @@ function lerp(value: number, inLow: number, inHigh: number, outLow = 0, outHigh 
   return outLow + t * (outHigh - outLow);
 }
 
-export function computeTechnicalScore(signals: TechnicalSignals): number {
+export function computeTechnicalScore(
+  signals: TechnicalSignals,
+  opts?: { recentVolumeAnomaly?: boolean },
+): number {
   const scores: number[] = [];
 
   // RSI: 30-70 is neutral territory. Below 30 = oversold (bullish contrarian), above 70 = overbought
@@ -66,7 +69,11 @@ export function computeTechnicalScore(signals: TechnicalSignals): number {
   }
 
   if (scores.length === 0) return 50;
-  return clamp(scores.reduce((a, b) => a + b, 0) / scores.length);
+
+  let result = scores.reduce((a, b) => a + b, 0) / scores.length;
+  if (opts?.recentVolumeAnomaly) result += 10;
+
+  return clamp(result);
 }
 
 export function detectTechnicalFlags(signals: TechnicalSignals): TechnicalFlag[] {

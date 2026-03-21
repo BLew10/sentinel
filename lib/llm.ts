@@ -1,3 +1,4 @@
+import { withRetry } from './utils/retry';
 import type { LLMProvider, LLMResponse } from './utils/types';
 
 interface LLMCallOptions {
@@ -17,14 +18,30 @@ const PROVIDER_CONFIG: Record<LLMProvider, { envKey: string; defaultModel: strin
 
 const FALLBACK_ORDER: LLMProvider[] = ['gemini', 'anthropic', 'openrouter'];
 
-function getAvailableProvider(): { provider: LLMProvider; apiKey: string } | null {
+function getAvailableProviders(): Array<{ provider: LLMProvider; apiKey: string }> {
+  const available: Array<{ provider: LLMProvider; apiKey: string }> = [];
   for (const provider of FALLBACK_ORDER) {
     const key = process.env[PROVIDER_CONFIG[provider].envKey];
     if (key && key !== `your_${provider}_key_here` && !key.startsWith('your_')) {
-      return { provider, apiKey: key };
+      available.push({ provider, apiKey: key });
     }
   }
-  return null;
+  return available;
+}
+
+function getAvailableProvider(): { provider: LLMProvider; apiKey: string } | null {
+  const providers = getAvailableProviders();
+  return providers[0] ?? null;
+}
+
+function isRetryableLLMError(err: unknown): boolean {
+  if (err instanceof Error) {
+    const msg = err.message.toLowerCase();
+    if (msg.includes('429') || msg.includes('rate limit')) return true;
+    if (msg.includes('500') || msg.includes('502') || msg.includes('503') || msg.includes('504')) return true;
+    if (msg.includes('timeout') || msg.includes('econnreset') || msg.includes('network')) return true;
+  }
+  return false;
 }
 
 async function callGemini(prompt: string, apiKey: string, options: LLMCallOptions): Promise<{ text: string; model: string; tokens: number | null }> {
@@ -105,30 +122,60 @@ async function callOpenRouter(prompt: string, apiKey: string, options: LLMCallOp
   };
 }
 
-export async function callLLM<T = string>(prompt: string, options: LLMCallOptions = {}): Promise<LLMResponse<T>> {
-  let provider: LLMProvider;
-  let apiKey: string;
+const callers: Record<LLMProvider, typeof callGemini> = {
+  gemini: callGemini,
+  anthropic: callAnthropic,
+  openrouter: callOpenRouter,
+};
 
+async function callProviderWithRetry(
+  provider: LLMProvider,
+  apiKey: string,
+  prompt: string,
+  options: LLMCallOptions,
+): Promise<{ text: string; model: string; tokens: number | null }> {
+  return withRetry(
+    () => callers[provider](prompt, apiKey, options),
+    {
+      maxRetries: 2,
+      baseDelayMs: 2000,
+      shouldRetry: isRetryableLLMError,
+    },
+  );
+}
+
+export async function callLLM<T = string>(prompt: string, options: LLMCallOptions = {}): Promise<LLMResponse<T>> {
   if (options.provider) {
     const key = process.env[PROVIDER_CONFIG[options.provider].envKey];
     if (!key) throw new Error(`API key not configured for ${options.provider}`);
-    provider = options.provider;
-    apiKey = key;
-  } else {
-    const available = getAvailableProvider();
-    if (!available) throw new Error('No LLM provider configured. Set GEMINI_API_KEY, ANTHROPIC_API_KEY, or OPENROUTER_API_KEY.');
-    provider = available.provider;
-    apiKey = available.apiKey;
+
+    const result = await callProviderWithRetry(options.provider, key, prompt, options);
+    return parseResult<T>(result, options);
   }
 
-  const callers: Record<LLMProvider, typeof callGemini> = {
-    gemini: callGemini,
-    anthropic: callAnthropic,
-    openrouter: callOpenRouter,
-  };
+  const providers = getAvailableProviders();
+  if (providers.length === 0) {
+    throw new Error('No LLM provider configured. Set GEMINI_API_KEY, ANTHROPIC_API_KEY, or OPENROUTER_API_KEY.');
+  }
 
-  const result = await callers[provider](prompt, apiKey, options);
+  let lastError: unknown;
+  for (const { provider, apiKey } of providers) {
+    try {
+      const result = await callProviderWithRetry(provider, apiKey, prompt, options);
+      return parseResult<T>(result, options, provider);
+    } catch (err) {
+      lastError = err;
+    }
+  }
 
+  throw lastError;
+}
+
+function parseResult<T>(
+  result: { text: string; model: string; tokens: number | null },
+  options: LLMCallOptions,
+  provider?: LLMProvider,
+): LLMResponse<T> {
   let parsed: T;
   if (options.jsonMode) {
     const jsonStr = result.text.replace(/^```json\s*|```$/g, '').trim();
@@ -141,7 +188,7 @@ export async function callLLM<T = string>(prompt: string, options: LLMCallOption
     parsed,
     raw: result.text,
     model: result.model,
-    provider,
+    provider: provider ?? options.provider ?? 'gemini',
     tokens_used: result.tokens,
   };
 }

@@ -9,6 +9,7 @@ const NAV_ITEMS = [
   { href: '/screener', label: 'Screener', icon: '⊞' },
   { href: '/watchlist', label: 'Watchlist', icon: '★' },
   { href: '/signals', label: 'Signals', icon: '⚡' },
+  { href: '/guide', label: 'Guide', icon: '◈' },
 ];
 
 export function Sidebar() {

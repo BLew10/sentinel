@@ -15,6 +15,7 @@
     "compute:scores": "tsx scripts/compute-scores.ts",
     "compute:ai": "tsx scripts/compute-ai-analysis.ts",
     "discord": "tsx discord/bot.ts",
+    "check:freshness": "tsx scripts/check-data-freshness.ts",
     "cron": "tsx scripts/run-cron.ts",
     "cron:prices": "tsx scripts/run-cron.ts prices",
     "cron:scores": "tsx scripts/run-cron.ts scores",
@@ -27,7 +28,9 @@
     "backtest:score": "tsx scripts/backtest.ts score",
     "backfill:returns": "tsx scripts/backfill-returns.ts",
     "perf": "tsx scripts/compute-performance.ts",
-    "optimize:weights": "tsx scripts/optimize-weights.ts"
+    "optimize:weights": "tsx scripts/optimize-weights.ts",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.80.0",
@@ -51,6 +54,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.2.0",
     "tailwindcss": "^4",
-    "typescript": "^5"
+    "typescript": "^5",
+    "vitest": "^4.1.0"
   }
 }
