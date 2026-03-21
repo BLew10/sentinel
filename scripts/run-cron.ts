@@ -5,6 +5,7 @@ import { getStockPrices, FDApiError } from '../lib/financial-datasets';
 import { computeAllIndicators, computePercentileRank } from '../lib/indicators';
 import { computeAndStoreScores } from '../lib/scoring';
 import { detectAlerts, recordAlert } from '../lib/alerts';
+import { sendAlertToDiscord } from '../lib/discord-send';
 import { snapshotSignal } from '../lib/signals';
 import {
   createPipelineRun, startStep, finishStep, logStepError,
@@ -199,19 +200,22 @@ async function runAlerts(run: ReturnType<typeof createPipelineRun>) {
   try {
     const alerts = await detectAlerts();
     let recorded = 0;
+    let discordSent = 0;
 
     for (const alert of alerts) {
       try {
-        await recordAlert(alert);
+        const msgId = await sendAlertToDiscord(alert);
+        await recordAlert(alert, msgId ?? undefined);
         recorded++;
-        console.log(`  -> ${alert.alert_type}: ${alert.symbol} — ${alert.detail}`);
+        if (msgId) discordSent++;
+        console.log(`  -> ${alert.alert_type}: ${alert.symbol}${msgId ? ' [sent to Discord]' : ' [DB only]'}`);
       } catch (err) {
         logStepError(run, 'detect_alerts', alert.symbol, err instanceof Error ? err.message : String(err));
       }
     }
 
     finishStep(run, 'detect_alerts', 'success', {
-      detected: alerts.length, recorded,
+      detected: alerts.length, recorded, discord_sent: discordSent,
     });
   } catch (err) {
     logStepError(run, 'detect_alerts', undefined, err instanceof Error ? err.message : String(err));

@@ -85,23 +85,29 @@ interface AlertData {
   sector?: string | null;
 }
 
-export function buildAlertEmbed(alert: AlertData): EmbedBuilder {
-  const isBullish = ['score_threshold', 'insider_cluster_buy', 'insider_ceo_buy', 'triple_confirmation'].includes(alert.alert_type);
-  const color = isBullish ? 0x00d4aa : 0xff4757;
+const ALERT_LABELS: Record<string, { emoji: string; label: string; bullish: boolean }> = {
+  score_threshold: { emoji: '⬆️', label: 'Score Spike', bullish: true },
+  score_drop: { emoji: '⬇️', label: 'Score Drop', bullish: false },
+  triple_confirmation: { emoji: '✅', label: 'Triple Confirmation', bullish: true },
+  rsi_oversold_bounce: { emoji: '📈', label: 'RSI Oversold Bounce', bullish: true },
+  insider_cluster_buy: { emoji: '🏦', label: 'Insider Cluster Buy', bullish: true },
+  insider_ceo_buy: { emoji: '👔', label: 'CEO Purchase', bullish: true },
+  volume_spike: { emoji: '⚡', label: 'Volume Spike', bullish: false },
+  price_spike_reversal: { emoji: '📉', label: 'Price Spike Reversal', bullish: false },
+  dilution_filing: { emoji: '📄', label: 'Dilution Filing', bullish: false },
+  '13d_amendment': { emoji: '📄', label: '13D Amendment', bullish: false },
+  insider_form4: { emoji: '👔', label: 'Insider Form 4', bullish: false },
+};
 
-  const typeLabels: Record<string, string> = {
-    score_threshold: '⬆️ Score Spike',
-    score_drop: '⬇️ Score Drop',
-    insider_cluster_buy: '🏦 Insider Cluster Buy',
-    insider_ceo_buy: '👔 CEO Buy',
-    triple_confirmation: '✅ Triple Confirmation',
-  };
+export function buildAlertEmbed(alert: AlertData): EmbedBuilder {
+  const cfg = ALERT_LABELS[alert.alert_type] ?? { emoji: '🔔', label: alert.alert_type, bullish: false };
+  const color = cfg.bullish ? 0x00d4aa : alert.alert_type === 'score_drop' ? 0xff4757 : 0xffa502;
 
   return new EmbedBuilder()
     .setColor(color)
-    .setTitle(`${typeLabels[alert.alert_type] ?? alert.alert_type} — ${alert.symbol}`)
+    .setTitle(`${cfg.emoji} ${cfg.label} — ${alert.symbol}`)
     .setURL(`${APP_URL}/stock/${alert.symbol}`)
-    .setDescription(`**${alert.name}**${alert.sector ? ` · ${alert.sector}` : ''}\nSentinel Score: **${alert.sentinel_score}**`)
-    .addFields({ name: 'Detail', value: alert.detail })
+    .setDescription(`**${alert.name}**${alert.sector ? ` · ${alert.sector}` : ''}\n\n${alert.detail}`)
+    .setFooter({ text: `Sentinel Score: ${alert.sentinel_score} · ${APP_URL}` })
     .setTimestamp();
 }
