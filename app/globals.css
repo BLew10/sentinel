@@ -1,0 +1,69 @@
+@import "tailwindcss";
+
+:root {
+  --bg-primary: #0a0a0f;
+  --bg-secondary: #12121a;
+  --bg-tertiary: #1a1a2e;
+  --border: #2a2a3e;
+  --text-primary: #e4e4ef;
+  --text-secondary: #8888a0;
+  --text-tertiary: #55556a;
+  --green: #00d4aa;
+  --green-bg: #00d4aa15;
+  --red: #ff4757;
+  --red-bg: #ff475715;
+  --amber: #ffa502;
+  --amber-bg: #ffa50215;
+  --cyan: #00b4d8;
+  --purple: #7c5cfc;
+  --purple-bg: #7c5cfc15;
+}
+
+@theme inline {
+  --color-bg-primary: var(--bg-primary);
+  --color-bg-secondary: var(--bg-secondary);
+  --color-bg-tertiary: var(--bg-tertiary);
+  --color-border: var(--border);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-tertiary: var(--text-tertiary);
+  --color-green: var(--green);
+  --color-green-bg: var(--green-bg);
+  --color-red: var(--red);
+  --color-red-bg: var(--red-bg);
+  --color-amber: var(--amber);
+  --color-amber-bg: var(--amber-bg);
+  --color-cyan: var(--cyan);
+  --color-purple: var(--purple);
+  --color-purple-bg: var(--purple-bg);
+  --font-display: var(--font-jetbrains-mono);
+  --font-body: var(--font-inter);
+}
+
+body {
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-family: var(--font-body), "Inter", sans-serif;
+}
+
+* {
+  border-color: var(--border);
+}
+
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-primary);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}

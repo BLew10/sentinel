@@ -1,0 +1,105 @@
+# SENTINEL PROJECT RULES
+
+## Project Context
+You are building Sentinel, an AI-powered equity and crypto screening platform.
+The full project plan is in SENTINEL_PROJECT_PLAN.md at the project root.
+ALWAYS read the relevant section of SENTINEL_PROJECT_PLAN.md before implementing any feature.
+
+## Tech Stack (do not deviate)
+- Next.js 15 with App Router (TypeScript strict mode)
+- Tailwind CSS v4 (dark theme, design tokens in globals.css)
+- Supabase (PostgreSQL + Auth + Realtime)
+- Financial Datasets API (primary data source)
+- Unusual Whales API (options flow)
+- Alpha Vantage API (technical indicators)
+- Anthropic Claude API via @anthropic-ai/sdk (AI analysis)
+- Discord.js (bot alerts)
+- Lightweight Charts by TradingView (price charts)
+- Recharts (score visualizations)
+
+## Architecture Rules
+1. All API calls go through wrapper functions in lib/ — never call APIs directly from components
+2. All database queries go through lib/db.ts — never import Supabase client in components
+3. API routes in app/api/ are thin — they call lib/ functions and return responses
+4. Components are presentational — they receive data via props or React Server Components
+5. The Discord bot is a SEPARATE process (discord/bot.ts), NOT inside Next.js
+6. Cron jobs are Vercel Cron routes in app/api/cron/ that call lib/ functions
+
+## Code Style
+- Use TypeScript strict mode. No `any` types. Define interfaces in lib/utils/types.ts
+- Use async/await, never .then() chains
+- All functions that can fail must have try/catch with meaningful error messages
+- Use early returns to reduce nesting
+- All numeric formatting (currency, percentages, large numbers) goes through lib/utils/format.ts
+- Use date-fns for all date manipulation — never raw Date math
+
+## Database Rules
+- Schema is defined in SENTINEL_PROJECT_PLAN.md under "Database Schema (Supabase)"
+- Always use parameterized queries (Supabase client handles this)
+- Always check for .error on Supabase responses before using .data
+- Use upsert with onConflict for tables with unique constraints
+- Batch inserts where possible (don't insert 3000 rows in a loop)
+
+## API Integration Rules
+- Financial Datasets: wrapper in lib/financial-datasets.ts
+  - Respect rate limits (pay-as-you-go: reasonable, Developer: 1000/min)
+  - Cache responses in Supabase — don't re-fetch the same data within 24h
+  - All endpoints documented at https://docs.financialdatasets.ai
+- Unusual Whales: wrapper in lib/unusual-whales.ts
+  - Docs at https://api.unusualwhales.com/docs
+- Alpha Vantage: wrapper in lib/alpha-vantage.ts
+  - Free tier: 25 calls/day. Be aggressive about caching.
+- Claude API: wrapper in lib/claude.ts
+  - Always use claude-sonnet-4-20250514 model
+  - Always set max_tokens: 4096
+  - All prompts must request JSON-only responses (no markdown, no preamble)
+  - Always validate JSON parsing with try/catch — AI responses can be malformed
+  - Store raw AI responses in JSONB columns for debugging
+
+## Scoring System Rules
+- Sentinel Score formula is defined in SENTINEL_PROJECT_PLAN.md under "Sentinel Score Formula"
+- All scoring functions return 0-100 integers
+- All scoring functions clamp output: Math.max(0, Math.min(100, score))
+- Score weights must sum to 100
+- When computing scores, always handle missing data gracefully (default to neutral 50)
+- Every score computation must create a signal_snapshot for performance tracking
+
+## UI/Design Rules
+- DARK THEME ONLY. Design tokens are in SENTINEL_PROJECT_PLAN.md under "Design Tokens"
+- Use JetBrains Mono for all data/numbers/tickers
+- Use Inter for all labels/descriptions/body text
+- Color coding is absolute: green = bullish, red = bearish, amber = caution, purple = AI
+- Every component must handle: loading state, error state, and empty state
+- Tables must be sortable by clicking column headers
+- All prices/values use lib/utils/format.ts for consistent formatting
+- No component should exceed 200 lines. Extract sub-components if needed.
+
+## Testing Rules
+- Write tests for ALL scoring functions (lib/analyzers/*.ts, lib/scoring.ts)
+- Write tests for ALL API wrapper functions (lib/financial-datasets.ts, etc.)
+- Use vitest as the test runner
+- Mock API calls in tests — never make real API calls in test suite
+- For scoring functions: test edge cases (all zeros, max values, missing data)
+- For flag detection: test each flag individually AND combinations
+
+## Performance Tracking Rules
+- EVERY alert trigger must call snapshotSignal() before posting to Discord
+- Forward returns are filled by cron — never block on forward price lookups
+- Minimum sample size for trusting a signal: N >= 30
+- Always compute alpha (stock return - SPY return), not just raw return
+
+## Git Rules
+- Commit after each completed task (not after each file)
+- Commit messages: "feat: [sprint]-[task] description" or "fix: description"
+- Never commit .env.local or API keys
+- Use feature branches per sprint: sprint-1/data-pipeline, sprint-2/screener-ui, etc.
+
+## What NOT to do
+- Do NOT use localStorage or sessionStorage (not needed, server-side data)
+- Do NOT install UI component libraries (shadcn, MUI, etc.) — build minimal custom components
+- Do NOT use Redux or Zustand — React Server Components + URL state is sufficient
+- Do NOT use Prisma — Supabase client is the ORM
+- Do NOT over-abstract early — concrete > clever
+- Do NOT skip error handling to "come back to it later"
+- Do NOT write components longer than 200 lines
+- Do NOT make Claude API calls without try/catch on JSON parsing
