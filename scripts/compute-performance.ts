@@ -1,7 +1,7 @@
 import 'dotenv/config';
 import { getSupabaseServerClient } from '../lib/db';
 
-const PERIODS = ['7d', '30d', '90d'] as const;
+const PERIODS = ['7d', '30d', '60d', '90d'] as const;
 
 function median(arr: number[]): number | null {
   if (arr.length === 0) return null;
@@ -33,7 +33,7 @@ async function main() {
   while (true) {
     const { data: page } = await db
       .from('signal_snapshots')
-      .select('trigger_type, symbol, return_7d, return_30d, return_90d, alpha_7d, alpha_30d, alpha_90d, max_drawdown_30d')
+      .select('trigger_type, symbol, return_7d, return_30d, return_60d, return_90d, alpha_7d, alpha_30d, alpha_60d, alpha_90d, max_drawdown_30d, max_drawdown_90d')
       .not('return_7d', 'is', null)
       .range(offset, offset + PAGE - 1);
     if (!page || page.length === 0) break;
@@ -72,8 +72,9 @@ async function main() {
         .map((r) => r[alphaKey] != null ? Number(r[alphaKey]) : null)
         .filter((v): v is number => v != null);
 
+      const ddKey = `max_drawdown_${period === '7d' ? '30d' : period}` as const;
       const drawdowns = rows
-        .map((r) => r.max_drawdown_30d != null ? Number(r.max_drawdown_30d) : null)
+        .map((r) => r[ddKey] != null ? Number(r[ddKey]) : null)
         .filter((v): v is number => v != null);
 
       if (returns.length === 0) continue;
@@ -124,7 +125,7 @@ async function main() {
   while (true) {
     const { data: page } = await db
       .from('signal_snapshots')
-      .select('sentinel_score, technical_score, return_7d, return_30d, return_90d, alpha_30d')
+      .select('sentinel_score, technical_score, return_7d, return_30d, return_60d, return_90d, alpha_30d, alpha_60d, alpha_90d')
       .not('return_30d', 'is', null)
       .range(bOffset, bOffset + PAGE - 1);
     if (!page || page.length === 0) break;
@@ -152,9 +153,10 @@ async function main() {
           .map((r) => r[returnKey] != null ? Number(r[returnKey]) : null)
           .filter((v): v is number => v != null);
 
-        const alphas = period === '30d'
-          ? inBucket.map((r) => r.alpha_30d != null ? Number(r.alpha_30d) : null).filter((v): v is number => v != null)
-          : [];
+        const alphaKey = `alpha_${period}` as const;
+        const alphas = inBucket
+          .map((r) => r[alphaKey] != null ? Number(r[alphaKey]) : null)
+          .filter((v): v is number => v != null);
 
         if (returns.length === 0) continue;
 
@@ -182,14 +184,19 @@ async function main() {
 
   for (const [signalType, rows] of groups) {
     const r30 = rows.map((r) => r.return_30d != null ? Number(r.return_30d) : null).filter((v): v is number => v != null);
-    const a30 = rows.map((r) => r.alpha_30d != null ? Number(r.alpha_30d) : null).filter((v): v is number => v != null);
+    const r60 = rows.map((r) => r.return_60d != null ? Number(r.return_60d) : null).filter((v): v is number => v != null);
+    const r90 = rows.map((r) => r.return_90d != null ? Number(r.return_90d) : null).filter((v): v is number => v != null);
     if (r30.length === 0) continue;
 
-    const avgReturn = (r30.reduce((a, b) => a + b, 0) / r30.length * 100).toFixed(2);
-    const winRate = ((r30.filter((r) => r > 0).length / r30.length) * 100).toFixed(1);
-    const avgAlpha = a30.length > 0 ? (a30.reduce((a, b) => a + b, 0) / a30.length * 100).toFixed(2) : 'N/A';
+    const avg = (arr: number[]) => arr.length > 0 ? (arr.reduce((a, b) => a + b, 0) / arr.length * 100).toFixed(1) : ' N/A';
+    const win = (arr: number[]) => arr.length > 0 ? ((arr.filter((r) => r > 0).length / arr.length) * 100).toFixed(0) : 'N/A';
 
-    console.log(`  ${signalType.padEnd(25)} | ${String(r30.length).padStart(4)} signals | 30d: ${avgReturn.padStart(7)}% | win: ${winRate.padStart(5)}% | alpha: ${avgAlpha.padStart(7)}%`);
+    console.log(
+      `  ${signalType.padEnd(25)} | ${String(r30.length).padStart(4)} sig` +
+      ` | 30d: ${avg(r30).padStart(6)}% (${win(r30).padStart(2)}%W)` +
+      ` | 60d: ${avg(r60).padStart(6)}%` +
+      ` | 90d: ${avg(r90).padStart(6)}%`
+    );
   }
 }
 

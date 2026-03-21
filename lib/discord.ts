@@ -83,6 +83,7 @@ interface AlertData {
   sentinel_score: number;
   detail: string;
   sector?: string | null;
+  historicalEdge?: string | null;
 }
 
 const ALERT_LABELS: Record<string, { emoji: string; label: string; bullish: boolean }> = {
@@ -103,11 +104,17 @@ export function buildAlertEmbed(alert: AlertData): EmbedBuilder {
   const cfg = ALERT_LABELS[alert.alert_type] ?? { emoji: '🔔', label: alert.alert_type, bullish: false };
   const color = cfg.bullish ? 0x00d4aa : alert.alert_type === 'score_drop' ? 0xff4757 : 0xffa502;
 
-  return new EmbedBuilder()
+  const embed = new EmbedBuilder()
     .setColor(color)
     .setTitle(`${cfg.emoji} ${cfg.label} — ${alert.symbol}`)
     .setURL(`${APP_URL}/stock/${alert.symbol}`)
     .setDescription(`**${alert.name}**${alert.sector ? ` · ${alert.sector}` : ''}\n\n${alert.detail}`)
     .setFooter({ text: `Sentinel Score: ${alert.sentinel_score} · ${APP_URL}` })
     .setTimestamp();
+
+  if (alert.historicalEdge) {
+    embed.addFields({ name: '📊 Historical Edge', value: alert.historicalEdge });
+  }
+
+  return embed;
 }

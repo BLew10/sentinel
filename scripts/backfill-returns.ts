@@ -98,7 +98,6 @@ async function main() {
     const update: Record<string, number | null> = {};
     let hasAnyReturn = false;
 
-    // alpha columns exist for 1d,7d,14d,30d,60d,90d — not 3d
     const ALPHA_FIELDS = new Set(['1d', '7d', '14d', '30d', '60d', '90d']);
 
     for (const { field, days } of OFFSETS) {

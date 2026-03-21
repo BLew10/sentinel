@@ -2,7 +2,7 @@
 
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
-import type { SignalPerfRow, BucketPerfRow } from '@/lib/signals';
+import type { SignalPerfRow, BucketPerfRow, PerfPeriod } from '@/lib/signals';
 
 interface RecentSignal {
   symbol: string;
@@ -13,6 +13,8 @@ interface RecentSignal {
   sentinel_score: number | null;
   return_7d: number | null;
   return_30d: number | null;
+  return_60d: number | null;
+  return_90d: number | null;
 }
 
 interface Props {
@@ -35,6 +37,11 @@ const SIGNAL_LABELS: Record<string, string> = {
 };
 
 const BUCKET_ORDER = ['0-30', '30-50', '50-65', '65-75', '75-100'];
+const PERIODS: { key: PerfPeriod; label: string }[] = [
+  { key: '30d', label: '30 Day' },
+  { key: '60d', label: '60 Day' },
+  { key: '90d', label: '90 Day' },
+];
 
 function fmtPct(v: number | null): string {
   if (v == null) return '—';
@@ -47,37 +54,75 @@ function returnColor(v: number | null): string {
   return v > 0 ? 'text-green' : v < 0 ? 'text-red' : 'text-text-secondary';
 }
 
+function getPerfValue(row: SignalPerfRow, metric: 'avg_return' | 'win_rate' | 'avg_alpha', period: PerfPeriod): number | null {
+  const key = `${metric}_${period}` as keyof SignalPerfRow;
+  return row[key] as number | null;
+}
+
+function getRecentReturn(s: RecentSignal, period: PerfPeriod): number | null {
+  const key = `return_${period}` as keyof RecentSignal;
+  const val = s[key];
+  return val != null ? Number(val) : null;
+}
+
 type Tab = 'performance' | 'buckets' | 'recent';
+
+function PeriodToggle({ period, onChange }: { period: PerfPeriod; onChange: (p: PerfPeriod) => void }) {
+  return (
+    <div className="flex gap-1 bg-bg-secondary rounded-md p-0.5 w-fit">
+      {PERIODS.map((p) => (
+        <button
+          key={p.key}
+          onClick={() => onChange(p.key)}
+          className={`px-3 py-1 text-xs rounded transition-colors ${
+            period === p.key
+              ? 'bg-green/20 text-green font-medium'
+              : 'text-text-tertiary hover:text-text-secondary'
+          }`}
+        >
+          {p.label}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 export function SignalsClient({ performance, recentSignals, bucketPerformance }: Props) {
   const router = useRouter();
   const [tab, setTab] = useState<Tab>('performance');
+  const [period, setPeriod] = useState<PerfPeriod>('30d');
 
-  const bucket30d = bucketPerformance
-    .filter((b) => b.period === '30d')
+  const bucketData = bucketPerformance
+    .filter((b) => b.period === period)
     .sort((a, b) => BUCKET_ORDER.indexOf(a.bucket) - BUCKET_ORDER.indexOf(b.bucket));
+
+  const periodLabel = PERIODS.find((p) => p.key === period)?.label ?? period;
 
   return (
     <div className="space-y-4">
-      {/* Tabs */}
-      <div className="flex gap-1 bg-bg-secondary rounded-lg p-1 w-fit">
-        {([
-          { key: 'performance' as Tab, label: 'By Signal Type' },
-          { key: 'buckets' as Tab, label: 'By Score Bucket' },
-          { key: 'recent' as Tab, label: 'Recent Signals' },
-        ]).map((t) => (
-          <button
-            key={t.key}
-            onClick={() => setTab(t.key)}
-            className={`px-4 py-1.5 text-sm rounded-md transition-colors ${
-              tab === t.key
-                ? 'bg-bg-tertiary text-text-primary font-medium'
-                : 'text-text-secondary hover:text-text-primary'
-            }`}
-          >
-            {t.label}
-          </button>
-        ))}
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        {/* Tabs */}
+        <div className="flex gap-1 bg-bg-secondary rounded-lg p-1 w-fit">
+          {([
+            { key: 'performance' as Tab, label: 'By Signal Type' },
+            { key: 'buckets' as Tab, label: 'By Score Bucket' },
+            { key: 'recent' as Tab, label: 'Recent Signals' },
+          ]).map((t) => (
+            <button
+              key={t.key}
+              onClick={() => setTab(t.key)}
+              className={`px-4 py-1.5 text-sm rounded-md transition-colors ${
+                tab === t.key
+                  ? 'bg-bg-tertiary text-text-primary font-medium'
+                  : 'text-text-secondary hover:text-text-primary'
+              }`}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
+        <PeriodToggle period={period} onChange={setPeriod} />
       </div>
 
       {tab === 'performance' && (
@@ -89,7 +134,7 @@ export function SignalsClient({ performance, recentSignals, bucketPerformance }:
         ) : (
           <div className="space-y-4">
             <p className="text-text-tertiary text-xs">
-              30-day forward return performance for each signal type, based on historical backtesting.
+              {periodLabel} forward return performance for each signal type, based on historical backtesting.
             </p>
             <div className="overflow-x-auto rounded-lg border border-border">
               <table className="w-full text-sm">
@@ -97,46 +142,52 @@ export function SignalsClient({ performance, recentSignals, bucketPerformance }:
                   <tr className="border-b border-border bg-bg-secondary">
                     <th className="px-4 py-3 text-left text-text-secondary font-medium">Signal Type</th>
                     <th className="px-4 py-3 text-center text-text-secondary font-medium">Count</th>
-                    <th className="px-4 py-3 text-center text-text-secondary font-medium cursor-help" title="% of signals with a positive 30-day return (stock went up)">Win Rate</th>
-                    <th className="px-4 py-3 text-center text-text-secondary font-medium cursor-help" title="Average raw 30-day return of the stock after the signal fired">Avg Return</th>
-                    <th className="px-4 py-3 text-center text-text-secondary font-medium cursor-help" title="Average 30-day return vs. SPY — positive alpha means the signal beat the market">Avg Alpha</th>
-                    <th className="px-4 py-3 text-center text-text-secondary font-medium cursor-help" title="Best single 30-day return from this signal type">Best</th>
-                    <th className="px-4 py-3 text-center text-text-secondary font-medium cursor-help" title="Worst single 30-day return from this signal type">Worst</th>
+                    <th className="px-4 py-3 text-center text-text-secondary font-medium cursor-help" title={`% of signals with a positive ${periodLabel} return`}>Win Rate</th>
+                    <th className="px-4 py-3 text-center text-text-secondary font-medium cursor-help" title={`Average raw ${periodLabel} return after signal fired`}>Avg Return</th>
+                    <th className="px-4 py-3 text-center text-text-secondary font-medium cursor-help" title={`Average ${periodLabel} return vs. SPY — positive alpha means the signal beat the market`}>Avg Alpha</th>
+                    <th className="px-4 py-3 text-center text-text-secondary font-medium cursor-help" title={`Best single ${periodLabel} return from this signal type`}>Best</th>
+                    <th className="px-4 py-3 text-center text-text-secondary font-medium cursor-help" title={`Worst single ${periodLabel} return from this signal type`}>Worst</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {performance.map((row) => (
-                    <tr key={row.signal_type} className="border-b border-border/50 hover:bg-bg-tertiary/30 transition-colors">
-                      <td className="px-4 py-2.5 font-medium">
-                        {SIGNAL_LABELS[row.signal_type] ?? row.signal_type}
-                      </td>
-                      <td className="px-4 py-2.5 text-center text-text-secondary font-display">{row.total_signals}</td>
-                      <td className="px-4 py-2.5 text-center">
-                        {row.win_rate_30d != null ? (
-                          <span className={row.win_rate_30d >= 0.5 ? 'text-green' : 'text-red'}>
-                            {(row.win_rate_30d * 100).toFixed(0)}%
-                          </span>
-                        ) : '—'}
-                      </td>
-                      <td className={`px-4 py-2.5 text-center font-display ${returnColor(row.avg_return_30d)}`}>
-                        {fmtPct(row.avg_return_30d)}
-                      </td>
-                      <td className={`px-4 py-2.5 text-center font-display ${returnColor(row.avg_alpha_30d)}`}>
-                        {fmtPct(row.avg_alpha_30d)}
-                      </td>
-                      <td className={`px-4 py-2.5 text-center font-display ${returnColor(row.best_return)}`}>
-                        {fmtPct(row.best_return)}
-                      </td>
-                      <td className={`px-4 py-2.5 text-center font-display ${returnColor(row.worst_return)}`}>
-                        {fmtPct(row.worst_return)}
-                      </td>
-                    </tr>
-                  ))}
+                  {performance.map((row) => {
+                    const wr = getPerfValue(row, 'win_rate', period);
+                    const avgRet = getPerfValue(row, 'avg_return', period);
+                    const avgAlpha = getPerfValue(row, 'avg_alpha', period);
+
+                    return (
+                      <tr key={row.signal_type} className="border-b border-border/50 hover:bg-bg-tertiary/30 transition-colors">
+                        <td className="px-4 py-2.5 font-medium">
+                          {SIGNAL_LABELS[row.signal_type] ?? row.signal_type}
+                        </td>
+                        <td className="px-4 py-2.5 text-center text-text-secondary font-display">{row.total_signals}</td>
+                        <td className="px-4 py-2.5 text-center">
+                          {wr != null ? (
+                            <span className={wr >= 0.5 ? 'text-green' : 'text-red'}>
+                              {(wr * 100).toFixed(0)}%
+                            </span>
+                          ) : '—'}
+                        </td>
+                        <td className={`px-4 py-2.5 text-center font-display ${returnColor(avgRet)}`}>
+                          {fmtPct(avgRet)}
+                        </td>
+                        <td className={`px-4 py-2.5 text-center font-display ${returnColor(avgAlpha)}`}>
+                          {fmtPct(avgAlpha)}
+                        </td>
+                        <td className={`px-4 py-2.5 text-center font-display ${returnColor(row.best_return)}`}>
+                          {fmtPct(row.best_return)}
+                        </td>
+                        <td className={`px-4 py-2.5 text-center font-display ${returnColor(row.worst_return)}`}>
+                          {fmtPct(row.worst_return)}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
             <p className="text-text-tertiary text-[11px]">
-              Win Rate = % of signals where the stock had a positive 30-day return.
+              Win Rate = % of signals where the stock had a positive {periodLabel.toLowerCase()} return.
               Alpha = stock return minus SPY return over the same period — positive alpha means the signal outperformed the market.
             </p>
           </div>
@@ -144,7 +195,7 @@ export function SignalsClient({ performance, recentSignals, bucketPerformance }:
       )}
 
       {tab === 'buckets' && (
-        bucket30d.length === 0 ? (
+        bucketData.length === 0 ? (
           <EmptyState
             title="No score bucket performance data yet"
             sub="Run: npm run backtest → npm run backfill:returns → npm run perf"
@@ -152,7 +203,7 @@ export function SignalsClient({ performance, recentSignals, bucketPerformance }:
         ) : (
           <div className="space-y-4">
             <p className="text-text-tertiary text-xs">
-              Does a higher Sentinel Score predict better 30-day returns? This table groups historical signals by score range.
+              Does a higher Sentinel Score predict better {periodLabel.toLowerCase()} returns? This table groups historical signals by score range.
             </p>
             <div className="overflow-x-auto rounded-lg border border-border">
               <table className="w-full text-sm">
@@ -160,14 +211,14 @@ export function SignalsClient({ performance, recentSignals, bucketPerformance }:
                   <tr className="border-b border-border bg-bg-secondary">
                     <th className="px-4 py-3 text-left text-text-secondary font-medium">Score Bucket</th>
                     <th className="px-4 py-3 text-center text-text-secondary font-medium">Signals</th>
-                    <th className="px-4 py-3 text-center text-text-secondary font-medium cursor-help" title="Average raw 30-day stock return after the signal">Avg 30D Return</th>
-                    <th className="px-4 py-3 text-center text-text-secondary font-medium cursor-help" title="Average 30-day return vs. SPY — positive means the signal beat the market">Avg 30D Alpha</th>
-                    <th className="px-4 py-3 text-center text-text-secondary font-medium cursor-help" title="% of signals with a positive 30-day return (stock went up)">Win Rate</th>
+                    <th className="px-4 py-3 text-center text-text-secondary font-medium cursor-help" title={`Average raw ${periodLabel} stock return after the signal`}>Avg Return</th>
+                    <th className="px-4 py-3 text-center text-text-secondary font-medium cursor-help" title={`Average ${periodLabel} return vs. SPY`}>Avg Alpha</th>
+                    <th className="px-4 py-3 text-center text-text-secondary font-medium cursor-help" title={`% of signals with a positive ${periodLabel} return`}>Win Rate</th>
                     <th className="px-4 py-3 text-center text-text-secondary font-medium">Verdict</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {bucket30d.map((row) => {
+                  {bucketData.map((row) => {
                     const verdict = row.avg_alpha != null
                       ? row.avg_alpha > 0.02 ? 'Strong Alpha'
                       : row.avg_alpha > 0 ? 'Slight Alpha'
@@ -206,7 +257,7 @@ export function SignalsClient({ performance, recentSignals, bucketPerformance }:
               </table>
             </div>
             <p className="text-text-tertiary text-[11px]">
-              Alpha = stock return minus SPY return over the same period.
+              Alpha = stock return minus SPY return over the {periodLabel.toLowerCase()} period.
               If high-score buckets show consistently higher alpha, the scoring model has predictive power.
             </p>
           </div>
@@ -230,31 +281,34 @@ export function SignalsClient({ performance, recentSignals, bucketPerformance }:
                   <th className="px-4 py-3 text-right text-text-secondary font-medium">Price</th>
                   <th className="px-4 py-3 text-center text-text-secondary font-medium">Score</th>
                   <th className="px-4 py-3 text-center text-text-secondary font-medium">7D Return</th>
-                  <th className="px-4 py-3 text-center text-text-secondary font-medium">30D Return</th>
+                  <th className="px-4 py-3 text-center text-text-secondary font-medium">{periodLabel} Return</th>
                 </tr>
               </thead>
               <tbody>
-                {recentSignals.map((s, i) => (
-                  <tr
-                    key={`${s.symbol}-${s.snapshot_date}-${i}`}
-                    className="border-b border-border/50 hover:bg-bg-tertiary/30 transition-colors cursor-pointer"
-                    onClick={() => router.push(`/stock/${s.symbol}`)}
-                  >
-                    <td className="px-4 py-2.5 font-display font-semibold text-green">{s.symbol}</td>
-                    <td className="px-4 py-2.5 text-text-secondary text-xs">
-                      {SIGNAL_LABELS[s.trigger_type] ?? s.trigger_type}
-                    </td>
-                    <td className="px-4 py-2.5 text-center text-text-tertiary text-xs">{s.snapshot_date}</td>
-                    <td className="px-4 py-2.5 text-right font-display">${Number(s.price_at_signal).toFixed(2)}</td>
-                    <td className="px-4 py-2.5 text-center font-display">{s.sentinel_score ?? '—'}</td>
-                    <td className={`px-4 py-2.5 text-center font-display ${returnColor(s.return_7d ? Number(s.return_7d) : null)}`}>
-                      {s.return_7d != null ? fmtPct(Number(s.return_7d)) : '—'}
-                    </td>
-                    <td className={`px-4 py-2.5 text-center font-display ${returnColor(s.return_30d ? Number(s.return_30d) : null)}`}>
-                      {s.return_30d != null ? fmtPct(Number(s.return_30d)) : '—'}
-                    </td>
-                  </tr>
-                ))}
+                {recentSignals.map((s, i) => {
+                  const periodReturn = getRecentReturn(s, period);
+                  return (
+                    <tr
+                      key={`${s.symbol}-${s.snapshot_date}-${i}`}
+                      className="border-b border-border/50 hover:bg-bg-tertiary/30 transition-colors cursor-pointer"
+                      onClick={() => router.push(`/stock/${s.symbol}`)}
+                    >
+                      <td className="px-4 py-2.5 font-display font-semibold text-green">{s.symbol}</td>
+                      <td className="px-4 py-2.5 text-text-secondary text-xs">
+                        {SIGNAL_LABELS[s.trigger_type] ?? s.trigger_type}
+                      </td>
+                      <td className="px-4 py-2.5 text-center text-text-tertiary text-xs">{s.snapshot_date}</td>
+                      <td className="px-4 py-2.5 text-right font-display">${Number(s.price_at_signal).toFixed(2)}</td>
+                      <td className="px-4 py-2.5 text-center font-display">{s.sentinel_score ?? '—'}</td>
+                      <td className={`px-4 py-2.5 text-center font-display ${returnColor(s.return_7d ? Number(s.return_7d) : null)}`}>
+                        {s.return_7d != null ? fmtPct(Number(s.return_7d)) : '—'}
+                      </td>
+                      <td className={`px-4 py-2.5 text-center font-display ${returnColor(periodReturn)}`}>
+                        {periodReturn != null ? fmtPct(periodReturn) : '—'}
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
