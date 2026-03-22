@@ -39,11 +39,12 @@ export function buildActivityItems(
 ): ActivityItem[] {
   const items: ActivityItem[] = [];
 
-  for (const t of insiderTrades) {
+  for (let i = 0; i < insiderTrades.length; i++) {
+    const t = insiderTrades[i];
     const isBuy = t.transaction_type.toLowerCase().includes('buy') || t.transaction_type.toLowerCase().includes('purchase');
     const valueStr = t.transaction_value ? ` (${formatCurrency(t.transaction_value, { compact: true })})` : '';
     items.push({
-      id: `ins-${t.symbol}-${t.transaction_date}-${t.insider_name}`,
+      id: `ins-${t.symbol}-${t.transaction_date}-${t.insider_name}-${i}`,
       date: t.transaction_date,
       category: 'insider',
       symbol: t.symbol,
@@ -53,11 +54,12 @@ export function buildActivityItems(
     });
   }
 
-  for (const f of filings) {
+  for (let i = 0; i < filings.length; i++) {
+    const f = filings[i];
     const bearishTypes = ['S-3', 'S-1', 'SC 13D/A'];
     const isBearish = bearishTypes.some((bt) => f.filing_type.includes(bt));
     items.push({
-      id: `fil-${f.ticker}-${f.filing_date}-${f.filing_type}`,
+      id: `fil-${f.ticker}-${f.filing_date}-${f.filing_type}-${i}`,
       date: f.filing_date,
       category: 'filing',
       symbol: f.ticker,
@@ -67,13 +69,14 @@ export function buildActivityItems(
     });
   }
 
-  for (const h of institutionalChanges) {
+  for (let i = 0; i < institutionalChanges.length; i++) {
+    const h = institutionalChanges[i];
     if (!h.filing_date) continue;
     const isIncrease = (h.change_shares ?? 0) > 0;
     const pctStr = h.change_pct != null ? ` (${h.change_pct > 0 ? '+' : ''}${(h.change_pct * 100).toFixed(1)}%)` : '';
     const valStr = h.value ? ` · ${formatCurrency(h.value, { compact: true })}` : '';
     items.push({
-      id: `inst-${h.symbol}-${h.filing_date}-${h.institution_name}`,
+      id: `inst-${h.symbol}-${h.filing_date}-${h.institution_name}-${i}`,
       date: h.filing_date,
       category: 'institutional',
       symbol: h.symbol,
