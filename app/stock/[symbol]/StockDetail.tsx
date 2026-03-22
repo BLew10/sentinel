@@ -10,7 +10,7 @@ import { formatCurrency, formatPercent, formatMarketCap, generateActionSummary, 
 import { SignalsPanel } from './SignalsPanel';
 import type { TechnicalFlag } from '@/lib/analyzers/technical';
 import type { FundamentalFlag } from '@/lib/analyzers/fundamental';
-import type { Fundamentals, TechnicalSignals, SentinelScore, InsiderTrade, InsiderFlag, DetectedSignal } from '@/lib/utils/types';
+import type { Fundamentals, TechnicalSignals, SentinelScore, InsiderTrade, InsiderFlag, DetectedSignal, ChartEvent } from '@/lib/utils/types';
 
 interface PriceBar {
   date: string;
@@ -34,6 +34,7 @@ interface Props {
   signals: DetectedSignal[];
   latestPrice: PriceBar | null;
   priceChange: { absolute: number; percent: number } | null;
+  chartEvents: ChartEvent[];
 }
 
 const TABS = ['Overview', 'Fundamentals', 'Technicals', 'Insider Activity'] as const;
@@ -296,7 +297,7 @@ function CopyPromptButton({ getText }: { getText: () => string }) {
 export function StockDetail({
   stock, prices, fundamentals, technicals, scores,
   insiderTrades, technicalFlags, fundamentalFlags, insiderFlags, signals,
-  latestPrice, priceChange,
+  latestPrice, priceChange, chartEvents,
 }: Props) {
   const [activeTab, setActiveTab] = useState<Tab>('Overview');
 
@@ -393,7 +394,7 @@ export function StockDetail({
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 bg-bg-secondary rounded-lg border border-border p-4">
           <h3 className="text-sm font-medium text-text-secondary mb-3">Price History</h3>
-          <PriceChart prices={prices} sma50={n(technicals?.sma_50)} sma200={n(technicals?.sma_200)} />
+          <PriceChart prices={prices} sma50={n(technicals?.sma_50)} sma200={n(technicals?.sma_200)} events={chartEvents} />
         </div>
         <div className="bg-bg-secondary rounded-lg border border-border p-4">
           <h3 className="text-sm font-medium text-text-secondary mb-3">Score Breakdown</h3>

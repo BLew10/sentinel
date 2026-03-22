@@ -387,6 +387,19 @@ export type FlowFlag =
   | 'CALL_WALL';
 
 // ============================================
+// CHART EVENT TYPES
+// ============================================
+
+export type ChartEventCategory = 'insider_buy' | 'insider_sell' | 'earnings' | 'sec_filing';
+
+export interface ChartEvent {
+  date: string;
+  category: ChartEventCategory;
+  label: string;
+  detail: string;
+}
+
+// ============================================
 // SCORING TYPES
 // ============================================
 
