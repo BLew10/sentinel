@@ -4,7 +4,8 @@ import { SCREENER_PRESETS } from '@/lib/utils/constants';
 import { formatCurrency, formatMarketCap, formatPercentRaw, formatRelativeTime, scoreVerdict, verdictColor, generateSignalSummary, detectDivergences } from '@/lib/utils/format';
 import type { Divergence } from '@/lib/utils/format';
 import Link from 'next/link';
-import { RecentActivity, buildActivityItems } from '@/components/dashboard/RecentActivity';
+import { RecentActivity } from '@/components/dashboard/RecentActivity';
+import { buildActivityItems } from '@/components/dashboard/activity-utils';
 
 export const dynamic = 'force-dynamic';
 
