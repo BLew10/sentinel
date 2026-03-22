@@ -434,6 +434,16 @@ export interface ScoredStock extends SentinelScore {
 // API RESPONSE TYPES (Financial Datasets)
 // ============================================
 
+export interface FDCryptoPriceBar {
+  ticker: string;
+  open: number;
+  close: number;
+  high: number;
+  low: number;
+  volume: number;
+  time: string;
+}
+
 export interface FDStockPrice {
   open: number;
   close: number;

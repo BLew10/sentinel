@@ -1,10 +1,10 @@
 import { getSupabaseServerClient } from '@/lib/db';
 import { ScoreBadge } from '@/components/ui/ScoreBadge';
-import { FlagChip } from '@/components/ui/FlagChip';
 import { SCREENER_PRESETS } from '@/lib/utils/constants';
 import { formatCurrency, formatMarketCap, formatPercentRaw, formatRelativeTime, scoreVerdict, verdictColor, generateSignalSummary, detectDivergences } from '@/lib/utils/format';
 import type { Divergence } from '@/lib/utils/format';
 import Link from 'next/link';
+import { RecentActivity, buildActivityItems } from '@/components/dashboard/RecentActivity';
 
 export const dynamic = 'force-dynamic';
 
@@ -167,6 +167,52 @@ async function getScoreAccuracy() {
   return { highBucket, lowBucket };
 }
 
+async function getRecentActivity() {
+  const db = getSupabaseServerClient();
+
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 86_400_000).toISOString().split('T')[0];
+
+  const [insiderRes, filingRes, instRes] = await Promise.all([
+    db.from('insider_trades')
+      .select('symbol, insider_name, insider_title, transaction_date, transaction_type, shares, price_per_share, transaction_value')
+      .gte('transaction_date', thirtyDaysAgo)
+      .order('transaction_date', { ascending: false })
+      .limit(30),
+    db.from('sec_filing_analysis')
+      .select('symbol, filing_type, filing_date')
+      .not('filing_date', 'is', null)
+      .gte('filing_date', thirtyDaysAgo)
+      .order('filing_date', { ascending: false })
+      .limit(20),
+    db.from('institutional_holdings')
+      .select('symbol, institution_name, change_shares, change_pct, value, filing_date')
+      .not('filing_date', 'is', null)
+      .not('change_shares', 'is', null)
+      .gte('filing_date', thirtyDaysAgo)
+      .order('filing_date', { ascending: false })
+      .limit(20),
+  ]);
+
+  const insiderTrades = (insiderRes.data ?? []) as Array<{
+    symbol: string; insider_name: string; insider_title: string | null;
+    transaction_date: string; transaction_type: string; shares: number;
+    price_per_share: number | null; transaction_value: number | null;
+  }>;
+
+  const filings = (filingRes.data ?? []).map((f) => ({
+    ticker: (f as Record<string, unknown>).symbol as string,
+    filing_type: (f as Record<string, unknown>).filing_type as string,
+    filing_date: (f as Record<string, unknown>).filing_date as string,
+  }));
+
+  const instChanges = (instRes.data ?? []) as Array<{
+    symbol: string; institution_name: string; change_shares: number | null;
+    change_pct: number | null; value: number | null; filing_date: string | null;
+  }>;
+
+  return buildActivityItems(insiderTrades, filings, instChanges);
+}
+
 async function getStats() {
   const db = getSupabaseServerClient();
   const [stocksRes, scoresRes, highRes, spyRes] = await Promise.all([
@@ -191,8 +237,8 @@ async function getStats() {
 }
 
 export default async function Dashboard() {
-  const [topStocks, actionable, divergenceStocks, movers, stats, recentAlerts, bestSignal, scoreAccuracy] = await Promise.all([
-    getTopStocks(), getActionableStocks(), getDivergenceStocks(), getMovers(), getStats(), getRecentAlerts(), getBestSignal(), getScoreAccuracy(),
+  const [topStocks, actionable, divergenceStocks, movers, stats, recentAlerts, bestSignal, scoreAccuracy, activityItems] = await Promise.all([
+    getTopStocks(), getActionableStocks(), getDivergenceStocks(), getMovers(), getStats(), getRecentAlerts(), getBestSignal(), getScoreAccuracy(), getRecentActivity(),
   ]);
 
   return (
@@ -545,6 +591,9 @@ export default async function Dashboard() {
           </div>
         </div>
       )}
+
+      {/* Recent Activity Feed */}
+      <RecentActivity items={activityItems} />
 
       {/* Legend */}
       <div className="border-t border-border pt-6">

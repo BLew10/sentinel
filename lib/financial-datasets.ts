@@ -2,6 +2,7 @@ import { FINANCIAL_DATASETS_BASE_URL, RATE_LIMIT_DELAY_MS } from './utils/consta
 import { withRetry } from './utils/retry';
 import type {
   FDStockPrice,
+  FDCryptoPriceBar,
   FDCompanyFacts,
   FDInsiderTrade,
   FDInstitutionalOwnership,
@@ -117,6 +118,55 @@ function qs(params: Record<string, string | number | undefined>): string {
     (entry): entry is [string, string | number] => entry[1] !== undefined,
   );
   return entries.map(([k, v]) => `${k}=${encodeURIComponent(v)}`).join('&');
+}
+
+// ── Crypto Prices ──────────────────────────────────────────
+
+export async function getCryptoPrices(
+  ticker: string,
+  startDate: string,
+  endDate: string,
+  opts?: {
+    interval?: 'day' | 'week' | 'month' | 'year';
+    intervalMultiplier?: number;
+  },
+): Promise<FDCryptoPriceBar[]> {
+  const PAGE_LIMIT = 5000;
+  const allPrices: FDCryptoPriceBar[] = [];
+  let currentStart = startDate;
+
+  while (currentStart < endDate) {
+    const q = qs({
+      ticker,
+      interval: opts?.interval ?? 'day',
+      interval_multiplier: opts?.intervalMultiplier ?? 1,
+      start_date: currentStart,
+      end_date: endDate,
+      limit: PAGE_LIMIT,
+    });
+    const res = await rateLimitedFetch(`${BASE}/crypto/prices?${q}`);
+    const json = await res.json();
+    const page: FDCryptoPriceBar[] = json.prices ?? [];
+    if (page.length === 0) break;
+
+    allPrices.push(...page);
+
+    if (page.length < PAGE_LIMIT) break;
+
+    // Advance start past the last returned date
+    const lastTime = page[page.length - 1].time;
+    const lastDate = new Date(lastTime);
+    lastDate.setDate(lastDate.getDate() + 1);
+    currentStart = lastDate.toISOString().split('T')[0];
+  }
+
+  return allPrices;
+}
+
+export async function getCryptoTickers(): Promise<string[]> {
+  const res = await rateLimitedFetch(`${BASE}/crypto/prices/tickers/`);
+  const json = await res.json();
+  return json.tickers ?? [];
 }
 
 // ── Prices ─────────────────────────────────────────────────

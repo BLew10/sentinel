@@ -3,6 +3,7 @@
 import { useState } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
+import { HelpModal } from './HelpModal';
 
 const NAV_ITEMS = [
   { href: '/', label: 'Dashboard', icon: '◆' },
@@ -15,6 +16,7 @@ const NAV_ITEMS = [
 export function Sidebar() {
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [helpOpen, setHelpOpen] = useState(false);
 
   const isStockPage = pathname.startsWith('/stock/');
 
@@ -37,19 +39,23 @@ export function Sidebar() {
       {mobileOpen && (
         <div className="fixed inset-0 z-50 lg:hidden">
           <div className="absolute inset-0 bg-black/50" onClick={() => setMobileOpen(false)} />
-          <SidebarContent pathname={pathname} isStockPage={isStockPage} onClose={() => setMobileOpen(false)} />
+          <SidebarContent pathname={pathname} isStockPage={isStockPage} onClose={() => setMobileOpen(false)} onHelpOpen={() => { setMobileOpen(false); setHelpOpen(true); }} />
         </div>
       )}
 
       {/* Desktop sidebar */}
       <div className="hidden lg:block">
-        <SidebarContent pathname={pathname} isStockPage={isStockPage} />
+        <SidebarContent pathname={pathname} isStockPage={isStockPage} onHelpOpen={() => setHelpOpen(true)} />
       </div>
+
+      <HelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
     </>
   );
 }
 
-function SidebarContent({ pathname, isStockPage, onClose }: { pathname: string; isStockPage: boolean; onClose?: () => void }) {
+function SidebarContent({ pathname, isStockPage, onClose, onHelpOpen }: {
+  pathname: string; isStockPage: boolean; onClose?: () => void; onHelpOpen?: () => void;
+}) {
   return (
     <aside className="fixed left-0 top-0 h-full w-56 bg-bg-secondary border-r border-border flex flex-col z-50">
       <div className="px-5 py-6 border-b border-border flex items-center justify-between">
@@ -92,6 +98,16 @@ function SidebarContent({ pathname, isStockPage, onClose }: { pathname: string; 
           </div>
         )}
       </nav>
+
+      <div className="px-3 pb-2">
+        <button
+          onClick={onHelpOpen}
+          className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text-secondary hover:text-text-primary hover:bg-bg-tertiary/50 transition-colors cursor-pointer"
+        >
+          <span className="text-base w-5 text-center">?</span>
+          Getting Started
+        </button>
+      </div>
 
       <div className="px-5 py-4 border-t border-border">
         <p className="text-text-tertiary text-[10px] font-display">v0.5.0 · Sprint 5</p>
