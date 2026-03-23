@@ -46,7 +46,7 @@ function volumeAnomalyToSignal(a: VolumeAnomaly): DetectedSignal {
   };
 }
 
-function filingFlagToSignal(f: FilingFlag): DetectedSignal {
+function filingFlagToSignal(f: FilingFlag, index: number): DetectedSignal {
   const configs: Record<string, { label: string; severity: SignalSeverity; direction: DetectedSignal['direction']; icon: string; desc: string }> = {
     DILUTION_FILING: {
       label: 'Dilution Filing',
@@ -80,7 +80,7 @@ function filingFlagToSignal(f: FilingFlag): DetectedSignal {
   };
 
   return {
-    id: `filing-${f.type}-${f.filing.filing_date}`,
+    id: `filing-${f.type}-${f.filing.filing_date}-${index}`,
     type: f.type,
     label: cfg.label,
     severity: cfg.severity,
@@ -137,8 +137,8 @@ export function detectAllSignals(input: DetectAllSignalsInput): DetectedSignal[]
 
   // SEC filing flags
   const filingFlags = detectFilingFlags(filings);
-  for (const ff of filingFlags) {
-    signals.push(filingFlagToSignal(ff));
+  for (let i = 0; i < filingFlags.length; i++) {
+    signals.push(filingFlagToSignal(filingFlags[i], i));
   }
 
   // Insider flags
