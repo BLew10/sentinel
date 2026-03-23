@@ -25,7 +25,9 @@ export default async function StockPage({ params }: Props) {
   const sym = symbol.toUpperCase();
   const db = getSupabaseServerClient();
 
-  const [stockRes, pricesRes, fundRes, techRes, scoresRes, insiderRes, earningsRes, latestAiRes] = await Promise.all([
+  const SINGLE_USER_ID = '00000000-0000-0000-0000-000000000001';
+
+  const [stockRes, pricesRes, fundRes, techRes, scoresRes, insiderRes, earningsRes, latestAiRes, watchlistRes] = await Promise.all([
     db.from('stocks').select('*').eq('symbol', sym).single(),
     db.from('daily_prices').select('date, open, high, low, close, volume').eq('symbol', sym).order('date', { ascending: true }),
     db.from('fundamentals').select('*').eq('symbol', sym).single(),
@@ -39,6 +41,11 @@ export default async function StockPage({ params }: Props) {
       .order('analyzed_at', { ascending: false })
       .limit(1)
       .single(),
+    db.from('watchlist')
+      .select('id, notes, target_price')
+      .eq('user_id', SINGLE_USER_ID)
+      .eq('symbol', sym)
+      .maybeSingle(),
   ]);
 
   if (!stockRes.data) notFound();
@@ -119,6 +126,10 @@ export default async function StockPage({ params }: Props) {
 
   const chartEvents = buildChartEvents(insiderTrades, earningsRows, filings);
 
+  const watchlistEntry = watchlistRes.data
+    ? { notes: watchlistRes.data.notes as string | null, targetPrice: watchlistRes.data.target_price ? Number(watchlistRes.data.target_price) : null }
+    : null;
+
   return (
     <StockDetail
       stock={stock}
@@ -138,6 +149,7 @@ export default async function StockPage({ params }: Props) {
       setups={setups}
       latestAi={latestAi}
       allFlags={allFlags}
+      watchlistEntry={watchlistEntry}
     />
   );
 }

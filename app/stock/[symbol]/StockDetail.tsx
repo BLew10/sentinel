@@ -1,7 +1,8 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import Link from 'next/link';
+
 import { ScoreBadge } from '@/components/ui/ScoreBadge';
 import { FlagChip } from '@/components/ui/FlagChip';
 import { PriceChart } from './PriceChart';
@@ -51,6 +52,7 @@ interface Props {
   setups?: Setup[];
   latestAi?: LatestAi | null;
   allFlags?: string[];
+  watchlistEntry?: { notes: string | null; targetPrice: number | null } | null;
 }
 
 const TABS = ['Overview', 'Fundamentals', 'Technicals', 'Insider Activity'] as const;
@@ -387,9 +389,17 @@ export function StockDetail({
   stock, prices, fundamentals, technicals, scores,
   insiderTrades, technicalFlags, fundamentalFlags, insiderFlags, signals,
   latestPrice, priceChange, chartEvents, valueReversal,
-  setups, latestAi, allFlags: passedFlags,
+  setups, latestAi, allFlags: passedFlags, watchlistEntry: initialEntry,
 }: Props) {
   const [activeTab, setActiveTab] = useState<Tab>('Overview');
+  const [watchlisted, setWatchlisted] = useState(initialEntry != null);
+  const [watchlistNotes, setWatchlistNotes] = useState(initialEntry?.notes ?? '');
+  const [watchlistTarget, setWatchlistTarget] = useState(initialEntry?.targetPrice?.toString() ?? '');
+  const [showWatchlistModal, setShowWatchlistModal] = useState(false);
+
+  const handleWatchlistClick = useCallback(() => {
+    setShowWatchlistModal(true);
+  }, []);
 
   const allFlags = passedFlags ?? [...technicalFlags, ...fundamentalFlags, ...insiderFlags];
 
@@ -427,6 +437,17 @@ export function StockDetail({
               )}
             </div>
           )}
+          <button
+            onClick={handleWatchlistClick}
+            className={`px-3 py-1.5 text-xs rounded-lg border transition-all ${
+              watchlisted
+                ? 'border-green/40 bg-green-bg text-green hover:bg-green/15'
+                : 'border-border bg-bg-secondary text-text-secondary hover:text-green hover:border-green/40'
+            }`}
+            title={watchlisted ? 'Edit watchlist entry' : 'Add to watchlist'}
+          >
+            {watchlisted ? '★ Watching' : '☆ Watch'}
+          </button>
           <CopyPromptButton
             getText={() => buildAgentPrompt(stock, prices, fundamentals, technicals, scores, insiderTrades, technicalFlags, fundamentalFlags, insiderFlags, signals, latestPrice)}
           />
@@ -533,6 +554,180 @@ export function StockDetail({
         {activeTab === 'Insider Activity' && (
           <InsiderTab trades={insiderTrades} />
         )}
+      </div>
+
+      <WatchlistModal
+        open={showWatchlistModal}
+        onClose={() => setShowWatchlistModal(false)}
+        symbol={stock.symbol}
+        watchlisted={watchlisted}
+        notes={watchlistNotes}
+        targetPrice={watchlistTarget}
+        onSave={(saved) => {
+          setWatchlisted(true);
+          setWatchlistNotes(saved.notes);
+          setWatchlistTarget(saved.targetPrice);
+          setShowWatchlistModal(false);
+        }}
+        onRemove={() => {
+          setWatchlisted(false);
+          setWatchlistNotes('');
+          setWatchlistTarget('');
+          setShowWatchlistModal(false);
+        }}
+      />
+    </div>
+  );
+}
+
+function WatchlistModal({
+  open, onClose, symbol, watchlisted, notes, targetPrice, onSave, onRemove,
+}: {
+  open: boolean;
+  onClose: () => void;
+  symbol: string;
+  watchlisted: boolean;
+  notes: string;
+  targetPrice: string;
+  onSave: (data: { notes: string; targetPrice: string }) => void;
+  onRemove: () => void;
+}) {
+  const [localNotes, setLocalNotes] = useState(notes);
+  const [localTarget, setLocalTarget] = useState(targetPrice);
+  const [saving, setSaving] = useState(false);
+  const [removing, setRemoving] = useState(false);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    if (open) {
+      setLocalNotes(notes);
+      setLocalTarget(targetPrice);
+      setTimeout(() => textareaRef.current?.focus(), 50);
+    }
+  }, [open, notes, targetPrice]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [open, onClose]);
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const tp = localTarget.trim() ? parseFloat(localTarget) : undefined;
+      const res = await fetch('/api/watchlist', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          symbol,
+          notes: localNotes.trim() || undefined,
+          target_price: Number.isFinite(tp) ? tp : undefined,
+        }),
+      });
+      if (res.ok) {
+        onSave({ notes: localNotes.trim(), targetPrice: localTarget.trim() });
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRemove = async () => {
+    setRemoving(true);
+    try {
+      const res = await fetch(`/api/watchlist?symbol=${symbol}`, { method: 'DELETE' });
+      if (res.ok) onRemove();
+    } finally {
+      setRemoving(false);
+    }
+  };
+
+  if (!open) return null;
+
+  return (
+    <div className="fixed inset-0 z-100 flex items-center justify-center">
+      <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={onClose} />
+      <div className="relative bg-bg-primary border border-border rounded-2xl shadow-2xl w-full max-w-md mx-4">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-border">
+          <div className="flex items-center gap-2">
+            <span className="text-green text-lg">★</span>
+            <h2 className="text-base font-display font-bold">
+              {watchlisted ? `${symbol} Watchlist` : `Add ${symbol} to Watchlist`}
+            </h2>
+          </div>
+          <button
+            onClick={onClose}
+            className="text-text-tertiary hover:text-text-primary text-xl transition-colors w-8 h-8 flex items-center justify-center"
+          >
+            &times;
+          </button>
+        </div>
+
+        <div className="px-6 py-5 space-y-4">
+          <div>
+            <label className="text-text-secondary text-xs font-medium block mb-1.5">
+              Notes <span className="text-text-tertiary font-normal">(optional)</span>
+            </label>
+            <textarea
+              ref={textareaRef}
+              value={localNotes}
+              onChange={(e) => setLocalNotes(e.target.value)}
+              placeholder="Thesis, entry plan, catalysts to watch..."
+              rows={4}
+              className="w-full bg-bg-secondary border border-border rounded-lg px-3 py-2.5 text-sm text-text-primary placeholder:text-text-tertiary resize-none focus:outline-none focus:border-green/50 transition-colors"
+            />
+          </div>
+
+          <div>
+            <label className="text-text-secondary text-xs font-medium block mb-1.5">
+              Target Price <span className="text-text-tertiary font-normal">(optional)</span>
+            </label>
+            <div className="relative">
+              <span className="absolute left-3 top-1/2 -translate-y-1/2 text-text-tertiary text-sm">$</span>
+              <input
+                type="number"
+                step="0.01"
+                value={localTarget}
+                onChange={(e) => setLocalTarget(e.target.value)}
+                placeholder="0.00"
+                className="w-full bg-bg-secondary border border-border rounded-lg pl-7 pr-3 py-2.5 text-sm font-display text-text-primary placeholder:text-text-tertiary focus:outline-none focus:border-green/50 transition-colors [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-between px-6 py-4 border-t border-border">
+          {watchlisted ? (
+            <button
+              onClick={handleRemove}
+              disabled={removing || saving}
+              className="px-3 py-2 text-xs rounded-lg border border-red/30 text-red hover:bg-red-bg transition-colors disabled:opacity-40"
+            >
+              {removing ? 'Removing...' : 'Remove'}
+            </button>
+          ) : (
+            <div />
+          )}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={onClose}
+              className="px-4 py-2 text-sm rounded-lg border border-border text-text-secondary hover:text-text-primary transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleSave}
+              disabled={saving || removing}
+              className="px-4 py-2 text-sm rounded-lg bg-green text-bg-primary font-medium hover:bg-green/90 transition-colors disabled:opacity-40"
+            >
+              {saving ? 'Saving...' : watchlisted ? 'Update' : 'Add to Watchlist'}
+            </button>
+          </div>
+        </div>
       </div>
     </div>
   );
