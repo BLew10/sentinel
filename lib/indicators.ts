@@ -602,6 +602,8 @@ export function detectVolumeDryUp(bars: PriceBar[]): VolumeDryUp | null {
   const rangeLow = Math.min(...lows);
   const priceRangePct = rangeLow > 0 ? (rangeHigh - rangeLow) / rangeLow : 0;
 
+  if (priceRangePct > 0.15) return null;
+
   const avgRatio = recentSlice.reduce((s, b) => s + b.volume / avgVolume50, 0)
     / recentSlice.length;
 

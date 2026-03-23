@@ -517,19 +517,21 @@ async function detectPredictiveAlerts(
       .from('daily_prices')
       .select('date, open, high, low, close, volume')
       .eq('symbol', sym)
-      .order('date', { ascending: true })
+      .order('date', { ascending: false })
       .limit(120);
 
     if (!pricesData || pricesData.length < 60) continue;
 
-    const prices: PriceBar[] = pricesData.map((p) => ({
-      date: p.date as string,
-      open: Number(p.open),
-      high: Number(p.high),
-      low: Number(p.low),
-      close: Number(p.close),
-      volume: Number(p.volume),
-    }));
+    const prices: PriceBar[] = pricesData
+      .map((p) => ({
+        date: p.date as string,
+        open: Number(p.open),
+        high: Number(p.high),
+        low: Number(p.low),
+        close: Number(p.close),
+        volume: Number(p.volume),
+      }))
+      .reverse();
 
     const closes = prices.map((b) => b.close);
 
@@ -600,13 +602,16 @@ async function detectPredictiveAlerts(
     if (!recentAlerts.has(`${sym}:volume_dry_up`)) {
       const dryUp = detectVolumeDryUp(prices);
       if (dryUp) {
+        const rangeLabel = dryUp.price_range_pct <= 5
+          ? 'tight consolidation'
+          : 'narrowing range';
         alerts.push({
           symbol: sym,
           name: stock.name,
           sector: stock.sector,
           alert_type: 'volume_dry_up',
           sentinel_score: ss,
-          detail: `**${dryUp.consecutive_low_volume_days} consecutive days** of below-average volume (${dryUp.avg_ratio}x avg)\nPrice range: ${dryUp.price_range_pct}% — tight consolidation\n_Volume contraction into a narrow range often precedes a breakout_\n_${today()}_`,
+          detail: `**${dryUp.consecutive_low_volume_days} consecutive days** of below-average volume (${dryUp.avg_ratio}x avg)\nPrice range: ${dryUp.price_range_pct}% — ${rangeLabel}\n_Volume contraction into a narrow range often precedes a breakout_\n_${today()}_`,
           channel_env: 'DISCORD_CHANNEL_ALERTS',
           signal_nature: 'predictive',
         });
