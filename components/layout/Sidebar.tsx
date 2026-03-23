@@ -99,7 +99,7 @@ function SidebarContent({ pathname, isStockPage, onClose, onHelpOpen }: {
         )}
       </nav>
 
-      <div className="px-3 pb-2">
+      <div className="px-3 pb-2 space-y-0.5">
         <button
           onClick={onHelpOpen}
           className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm text-text-secondary hover:text-text-primary hover:bg-bg-tertiary/50 transition-colors cursor-pointer"
@@ -107,6 +107,18 @@ function SidebarContent({ pathname, isStockPage, onClose, onHelpOpen }: {
           <span className="text-base w-5 text-center">?</span>
           Getting Started
         </button>
+        <Link
+          href="/admin"
+          onClick={onClose}
+          className={`flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors ${
+            pathname === '/admin'
+              ? 'bg-bg-tertiary text-text-primary font-medium'
+              : 'text-text-tertiary hover:text-text-secondary hover:bg-bg-tertiary/50'
+          }`}
+        >
+          <span className="text-base w-5 text-center">⚙</span>
+          System
+        </Link>
       </div>
 
       <div className="px-5 py-4 border-t border-border">
