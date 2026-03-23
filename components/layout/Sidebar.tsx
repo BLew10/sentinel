@@ -1,13 +1,22 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { HelpModal } from './HelpModal';
+import { formatRelativeTime } from '@/lib/utils/format';
+
+interface CronStatus {
+  started_at: string;
+  finished_at: string | null;
+  status: string;
+  error_count: number;
+}
 
 const NAV_ITEMS = [
   { href: '/', label: 'Dashboard', icon: '◆' },
   { href: '/screener', label: 'Screener', icon: '⊞' },
+  { href: '/sectors', label: 'Sectors', icon: '▦' },
   { href: '/watchlist', label: 'Watchlist', icon: '★' },
   { href: '/signals', label: 'Signals', icon: '⚡' },
   { href: '/guide', label: 'Guide', icon: '◈' },
@@ -17,6 +26,21 @@ export function Sidebar() {
   const pathname = usePathname();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [helpOpen, setHelpOpen] = useState(false);
+  const [cronStatus, setCronStatus] = useState<CronStatus | null>(null);
+
+  useEffect(() => {
+    async function fetchCronStatus() {
+      try {
+        const res = await fetch('/api/cron-status');
+        if (!res.ok) return;
+        const json = (await res.json()) as { lastRun: CronStatus | null };
+        setCronStatus(json.lastRun);
+      } catch { /* silent */ }
+    }
+    fetchCronStatus();
+    const interval = setInterval(fetchCronStatus, 5 * 60_000);
+    return () => clearInterval(interval);
+  }, []);
 
   const isStockPage = pathname.startsWith('/stock/');
 
@@ -39,13 +63,13 @@ export function Sidebar() {
       {mobileOpen && (
         <div className="fixed inset-0 z-50 lg:hidden">
           <div className="absolute inset-0 bg-black/50" onClick={() => setMobileOpen(false)} />
-          <SidebarContent pathname={pathname} isStockPage={isStockPage} onClose={() => setMobileOpen(false)} onHelpOpen={() => { setMobileOpen(false); setHelpOpen(true); }} />
+          <SidebarContent pathname={pathname} isStockPage={isStockPage} cronStatus={cronStatus} onClose={() => setMobileOpen(false)} onHelpOpen={() => { setMobileOpen(false); setHelpOpen(true); }} />
         </div>
       )}
 
       {/* Desktop sidebar */}
       <div className="hidden lg:block">
-        <SidebarContent pathname={pathname} isStockPage={isStockPage} onHelpOpen={() => setHelpOpen(true)} />
+        <SidebarContent pathname={pathname} isStockPage={isStockPage} cronStatus={cronStatus} onHelpOpen={() => setHelpOpen(true)} />
       </div>
 
       <HelpModal open={helpOpen} onClose={() => setHelpOpen(false)} />
@@ -53,18 +77,21 @@ export function Sidebar() {
   );
 }
 
-function SidebarContent({ pathname, isStockPage, onClose, onHelpOpen }: {
-  pathname: string; isStockPage: boolean; onClose?: () => void; onHelpOpen?: () => void;
+function SidebarContent({ pathname, isStockPage, cronStatus, onClose, onHelpOpen }: {
+  pathname: string; isStockPage: boolean; cronStatus: CronStatus | null; onClose?: () => void; onHelpOpen?: () => void;
 }) {
   return (
     <aside className="fixed left-0 top-0 h-full w-56 bg-bg-secondary border-r border-border flex flex-col z-50">
-      <div className="px-5 py-6 border-b border-border flex items-center justify-between">
-        <Link href="/" className="flex items-center gap-2" onClick={onClose}>
-          <span className="text-green font-display text-lg font-bold tracking-tight">SENTINEL</span>
-        </Link>
-        {onClose && (
-          <button onClick={onClose} className="text-text-tertiary hover:text-text-primary text-xl lg:hidden">×</button>
-        )}
+      <div className="px-5 py-6 border-b border-border">
+        <div className="flex items-center justify-between">
+          <Link href="/" className="flex items-center gap-2" onClick={onClose}>
+            <span className="text-green font-display text-lg font-bold tracking-tight">SENTINEL</span>
+          </Link>
+          {onClose && (
+            <button onClick={onClose} className="text-text-tertiary hover:text-text-primary text-xl lg:hidden">×</button>
+          )}
+        </div>
+        <CronStatusBadge cronStatus={cronStatus} />
       </div>
 
       <nav className="flex-1 px-3 py-4 space-y-1">
@@ -125,5 +152,32 @@ function SidebarContent({ pathname, isStockPage, onClose, onHelpOpen }: {
         <p className="text-text-tertiary text-[10px] font-display">v0.5.0 · Sprint 5</p>
       </div>
     </aside>
+  );
+}
+
+function CronStatusBadge({ cronStatus }: { cronStatus: CronStatus | null }) {
+  if (!cronStatus) {
+    return (
+      <p className="text-[10px] text-text-tertiary mt-2 font-display flex items-center gap-1.5">
+        <span className="text-text-tertiary">●</span> Cron: unknown
+      </p>
+    );
+  }
+
+  const diffHours = (Date.now() - new Date(cronStatus.started_at).getTime()) / 3_600_000;
+  const stale = diffHours > 36;
+  const failed = cronStatus.status === 'error';
+
+  const dotColor = failed ? 'text-red' : stale ? 'text-amber' : 'text-green';
+  const label = failed
+    ? `${formatRelativeTime(cronStatus.started_at)} · ${cronStatus.error_count} err`
+    : stale
+    ? `${formatRelativeTime(cronStatus.started_at)} · stale`
+    : formatRelativeTime(cronStatus.started_at);
+
+  return (
+    <p className={`text-[10px] mt-2 font-display flex items-center gap-1.5 ${failed ? 'text-red' : stale ? 'text-amber' : 'text-text-tertiary'}`}>
+      <span className={dotColor}>●</span> Cron: {label}
+    </p>
   );
 }

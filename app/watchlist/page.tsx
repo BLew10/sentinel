@@ -12,8 +12,7 @@ async function getWatchlist() {
     .from('watchlist')
     .select(`
       id, symbol, added_at, notes, target_price,
-      stocks!inner(name, sector, market_cap),
-      sentinel_scores(sentinel_score, technical_score, fundamental_score, rank, score_change_1d)
+      stocks!inner(name, sector, market_cap)
     `)
     .eq('user_id', SINGLE_USER_ID)
     .order('added_at', { ascending: false });
@@ -23,15 +22,21 @@ async function getWatchlist() {
     return [];
   }
 
-  return (data ?? []).map((row) => {
+  if (!data || data.length === 0) return [];
+
+  const symbols = data.map((r) => r.symbol as string);
+  const { data: scores } = await db
+    .from('sentinel_scores')
+    .select('symbol, sentinel_score, technical_score, fundamental_score, rank, score_change_1d')
+    .in('symbol', symbols);
+
+  const scoreMap = new Map(
+    (scores ?? []).map((s) => [s.symbol as string, s]),
+  );
+
+  return data.map((row) => {
     const stock = row.stocks as unknown as { name: string; sector: string | null; market_cap: number | null };
-    const score = row.sentinel_scores as unknown as {
-      sentinel_score: number | null;
-      technical_score: number | null;
-      fundamental_score: number | null;
-      rank: number | null;
-      score_change_1d: number | null;
-    } | null;
+    const score = scoreMap.get(row.symbol as string);
 
     return {
       id: row.id as number,
@@ -42,11 +47,11 @@ async function getWatchlist() {
       notes: row.notes as string | null,
       target_price: row.target_price ? Number(row.target_price) : null,
       added_at: row.added_at as string,
-      sentinel_score: score?.sentinel_score ?? null,
-      technical_score: score?.technical_score ?? null,
-      fundamental_score: score?.fundamental_score ?? null,
-      rank: score?.rank ?? null,
-      score_change_1d: score?.score_change_1d ?? null,
+      sentinel_score: score?.sentinel_score != null ? Number(score.sentinel_score) : null,
+      technical_score: score?.technical_score != null ? Number(score.technical_score) : null,
+      fundamental_score: score?.fundamental_score != null ? Number(score.fundamental_score) : null,
+      rank: score?.rank != null ? Number(score.rank) : null,
+      score_change_1d: score?.score_change_1d != null ? Number(score.score_change_1d) : null,
     };
   });
 }

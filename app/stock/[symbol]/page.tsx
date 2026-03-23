@@ -5,7 +5,7 @@ import { detectTechnicalFlags } from '@/lib/analyzers/technical';
 import { detectFundamentalFlags } from '@/lib/analyzers/fundamental';
 import { detectInsiderFlags } from '@/lib/analyzers/insider';
 import { detectAllSignals } from '@/lib/analyzers/signals';
-import type { TechnicalSignals, Fundamentals, ChartEvent, ChartEventCategory, InsiderTrade, FDSECFiling, EarningsAnalysis } from '@/lib/utils/types';
+import type { TechnicalSignals, Fundamentals, ChartEvent, ChartEventCategory, InsiderTrade, FDSECFiling, EarningsAnalysis, ValueReversalResult } from '@/lib/utils/types';
 import { StockDetail } from './StockDetail';
 
 export const dynamic = 'force-dynamic';
@@ -49,6 +49,10 @@ export default async function StockPage({ params }: Props) {
   const fundamentals = fundRes.data as Fundamentals | null;
   const technicals = techRes.data as TechnicalSignals | null;
   const scores = scoresRes.data as unknown as import('@/lib/utils/types').SentinelScore | null;
+
+  const scoreMetadata = scoresRes.data?.score_metadata as Record<string, unknown> | null;
+  const valueReversalData = scoreMetadata?.value_reversal as ValueReversalResult | undefined;
+  const valueReversal = valueReversalData?.fired ? valueReversalData : null;
   const insiderTrades = (insiderRes.data ?? []) as unknown as InsiderTrade[];
   const earningsRows = (earningsRes.data ?? []) as unknown as Pick<EarningsAnalysis, 'fiscal_quarter' | 'transcript_date'>[];
 
@@ -91,6 +95,7 @@ export default async function StockPage({ params }: Props) {
       fundamentalFlags={fundamentalFlags}
       insiderFlags={insiderFlags}
       signals={signals}
+      valueReversal={valueReversal}
       latestPrice={latestPrice}
       priceChange={priceChange}
       chartEvents={chartEvents}

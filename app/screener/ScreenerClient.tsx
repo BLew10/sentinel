@@ -48,6 +48,7 @@ interface Props {
   initialData: ScreenerRow[];
   sectors: string[];
   signalPerformance: Record<string, SignalPerformanceStats>;
+  initialSector?: string;
 }
 
 type SortKey = keyof Omit<ScreenerRow, 'active_signals'> | 'best_signal_win_rate';
@@ -111,6 +112,21 @@ function matchesFilters(
     if (row.sma_150 != null && row.sma_200 != null && row.sma_150 < row.sma_200) return false;
   }
 
+  // SMA50/200 distance filter: only show stocks where the gap between SMA50 and SMA200 is within X%
+  if (filters.sma_distance_max_pct != null) {
+    if (row.sma_50 == null || row.sma_200 == null || row.sma_200 === 0) return false;
+    const distancePct = Math.abs(row.sma_50 - row.sma_200) / row.sma_200 * 100;
+    if (distancePct > filters.sma_distance_max_pct) return false;
+  }
+
+  // SMA convergence filter: SMA50 is below SMA200 (no cross yet) but trending upward toward it
+  if (filters.sma_converging) {
+    if (row.sma_50 == null || row.sma_150 == null || row.sma_200 == null) return false;
+    const sma50BelowSma200 = row.sma_50 < row.sma_200;
+    const sma50AboveSma150 = row.sma_50 > row.sma_150;
+    if (!sma50BelowSma200 || !sma50AboveSma150) return false;
+  }
+
   // 52-week range filters
   if (filters.within_10pct_of_52w_high && (row.pct_from_52w_high == null || row.pct_from_52w_high < -0.1)) return false;
   if (filters.within_25pct_of_52w_high && (row.pct_from_52w_high == null || row.pct_from_52w_high < -0.25)) return false;
@@ -134,6 +150,7 @@ function matchesFilters(
 
   // Signal performance filters
   if (filters.has_active_signal && row.active_signals.length === 0) return false;
+  if (filters.has_value_reversal_signal && !row.active_signals.some((s) => s.trigger_type === 'value_reversal')) return false;
   if (filters.min_signal_win_rate != null) {
     const best = getBestSignalWinRate(row.active_signals, perfMap);
     if (best === null || best < filters.min_signal_win_rate) return false;
@@ -170,12 +187,14 @@ function SignalChip({ triggerType, perf }: {
   );
 }
 
-export function ScreenerClient({ initialData, sectors, signalPerformance }: Props) {
+export function ScreenerClient({ initialData, sectors, signalPerformance, initialSector }: Props) {
   const router = useRouter();
   const [sortKey, setSortKey] = useState<SortKey>('sentinel_score');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [search, setSearch] = useState('');
-  const [filters, setFilters] = useState<ScreenerFilters>({});
+  const [filters, setFilters] = useState<ScreenerFilters>(
+    initialSector ? { sectors: [initialSector] } : {}
+  );
   const [filterOpen, setFilterOpen] = useState(false);
   const [page, setPage] = useState(0);
   const [pageSize, setPageSize] = useState<number>(50);

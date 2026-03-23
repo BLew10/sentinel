@@ -2,8 +2,9 @@ import { getSupabaseServerClient } from './db';
 import { getSECFilings } from './financial-datasets';
 import { detectVolumeAnomalies, detectPriceSpikeReversal } from './indicators';
 import { detectFilingFlags } from './analyzers/sec-filings';
+import { snapshotSignal } from './signals';
 import { formatVolume } from './utils/format';
-import type { SentinelScore, InsiderTrade, PriceBar, FDSECFiling } from './utils/types';
+import type { SentinelScore, InsiderTrade, PriceBar, FDSECFiling, ValueReversalResult } from './utils/types';
 
 export interface Alert {
   symbol: string;
@@ -129,6 +130,43 @@ export async function detectAlerts(): Promise<Alert[]> {
     }
   }
 
+  // SMA50/200 Golden Cross / Death Cross
+  const { data: smaCrossSignals } = await db
+    .from('signal_snapshots')
+    .select('symbol, trigger_type, trigger_detail, price_at_signal, snapshot_date')
+    .in('trigger_type', ['golden_cross', 'death_cross'])
+    .gte('snapshot_date', new Date(Date.now() - 2 * 86_400_000).toISOString().split('T')[0])
+    .order('created_at', { ascending: false });
+
+  if (smaCrossSignals) {
+    for (const sig of smaCrossSignals) {
+      const sym = sig.symbol as string;
+      const triggerType = sig.trigger_type as string;
+      if (recentAlerts.has(`${sym}:${triggerType}`)) continue;
+      const scoreRow = scores.find((s) => s.symbol === sym);
+      if (!scoreRow) continue;
+      const stock = scoreRow.stocks as unknown as { name: string; sector: string | null };
+      const ss = (scoreRow as unknown as SentinelScore).sentinel_score ?? 0;
+      const price = sig.price_at_signal != null ? `$${Number(sig.price_at_signal).toFixed(2)}` : 'N/A';
+      const isGolden = triggerType === 'golden_cross';
+      const label = isGolden ? 'Golden Cross' : 'Death Cross';
+      const emoji = isGolden ? '🟢' : '🔴';
+      const commentary = isGolden
+        ? '_SMA50 crossing above SMA200 is historically one of the strongest long-term buy signals — confirms the trend has shifted bullish_'
+        : '_SMA50 crossing below SMA200 signals a bearish trend shift — institutional buyers often wait for this to recover before re-entering_';
+
+      alerts.push({
+        symbol: sym,
+        name: stock.name,
+        sector: stock.sector,
+        alert_type: triggerType,
+        sentinel_score: ss,
+        detail: `${emoji} **${label}** detected on ${sig.snapshot_date}\n${(sig.trigger_detail as string) ?? `SMA50 crossed ${isGolden ? 'above' : 'below'} SMA200`}\nPrice at signal: **${price}** · Sentinel Score: **${ss}**/100\n${commentary}`,
+        channel_env: 'DISCORD_CHANNEL_ALERTS',
+      });
+    }
+  }
+
   // Insider trades
   const { data: insiderTrades } = await db
     .from('insider_trades')
@@ -192,10 +230,132 @@ export async function detectAlerts(): Promise<Alert[]> {
     }
   }
 
+  // Value Reversal Candidate alerts
+  await detectValueReversalAlerts(scores, recentAlerts, alerts);
+
   // Signal-based alerts: volume spikes, SEC filings, price spike reversals
   await detectSignalAlerts(scores, recentAlerts, alerts);
 
   return alerts;
+}
+
+async function detectValueReversalAlerts(
+  scores: Array<Record<string, unknown>>,
+  recentAlerts: Set<string>,
+  alerts: Alert[],
+): Promise<void> {
+  const db = getSupabaseServerClient();
+
+  const { data: flaggedScores } = await db
+    .from('sentinel_scores')
+    .select('symbol, sentinel_score, technical_score, fundamental_score, earnings_ai_score, insider_score, institutional_score, news_sentiment_score, options_flow_score, flags, score_metadata')
+    .not('flags', 'is', null);
+
+  if (!flaggedScores) return;
+
+  for (const row of flaggedScores) {
+    const flags = row.flags as string[] | null;
+    if (!flags || !flags.includes('VALUE_REVERSAL_CANDIDATE')) continue;
+
+    const sym = row.symbol as string;
+    if (recentAlerts.has(`${sym}:value_reversal`)) continue;
+
+    const scoreRow = scores.find((s) => s.symbol === sym);
+    if (!scoreRow) continue;
+    const stock = scoreRow.stocks as unknown as { name: string; sector: string | null };
+    const ss = (scoreRow as unknown as SentinelScore).sentinel_score ?? 0;
+
+    const metadata = row.score_metadata as Record<string, unknown> | null;
+    const vr = metadata?.value_reversal as ValueReversalResult | undefined;
+    if (!vr) continue;
+
+    const d = vr.details;
+
+    const pctFromHigh = d.deep_pullback.pct_from_high != null
+      ? `${Math.abs(Math.round(d.deep_pullback.pct_from_high * 100))}%`
+      : 'N/A';
+
+    const buyerCount = d.insider_cluster_buy.buyers.length;
+    const totalVal = fmtDollars(d.insider_cluster_buy.total_value);
+    const fcfStr = d.fcf_yield.yield_pct != null
+      ? `${(d.fcf_yield.yield_pct * 100).toFixed(1)}%`
+      : 'N/A';
+    const peStr = d.pe_compression.current_pe != null
+      ? `${d.pe_compression.current_pe.toFixed(1)}x`
+      : 'N/A';
+    const fwdPeStr = d.pe_compression.forward_pe != null
+      ? `${d.pe_compression.forward_pe.toFixed(1)}x`
+      : 'N/A';
+    const histStr = d.macd_shift.current_histogram != null
+      ? d.macd_shift.current_histogram.toFixed(2)
+      : 'N/A';
+
+    const check = (met: boolean) => met ? '\u2705' : '\u274C';
+    const conditions = [
+      `${check(d.deep_pullback.met)} Deep pullback (${pctFromHigh} from high)`,
+      `${check(d.insider_cluster_buy.met)} Insider cluster buy (${fmtDollars(d.insider_cluster_buy.total_value)}, ${buyerCount} insiders)`,
+      `${check(d.first_buy_12mo.met)} First buy in 12+ months${d.first_buy_12mo.insider ? ` (${d.first_buy_12mo.insider})` : ''}`,
+      `${check(d.macd_shift.met)} MACD momentum shift`,
+      `${check(d.fcf_yield.met)} Strong FCF yield (${fcfStr})`,
+      `${check(d.pe_compression.met)} P/E compression (${peStr} trailing, ${fwdPeStr} forward)`,
+    ].join('\n');
+
+    const detail = [
+      `Conviction: **${vr.conviction}**/100 (${vr.conditions_met}/6 conditions)`,
+      `${pctFromHigh} from 52W high · FCF Yield: ${fcfStr} · P/E: ${peStr}`,
+      `Insider buying: ${buyerCount} insiders, ${totalVal}`,
+      `MACD Histogram: ${histStr}`,
+      '',
+      'Conditions:',
+      conditions,
+      '',
+      `_${today()}_`,
+    ].join('\n');
+
+    const latestPrice = await getLatestPrice(db, sym);
+
+    try {
+      await snapshotSignal({
+        symbol: sym,
+        triggerType: 'value_reversal',
+        triggerDetail: JSON.stringify(vr.details),
+        priceAtSignal: latestPrice,
+        sentinelScore: ss,
+        technicalScore: row.technical_score as number | null,
+        fundamentalScore: row.fundamental_score as number | null,
+        earningsAiScore: row.earnings_ai_score as number | null,
+        insiderScore: row.insider_score as number | null,
+        institutionalScore: row.institutional_score as number | null,
+        newsSentimentScore: row.news_sentiment_score as number | null,
+        optionsFlowScore: row.options_flow_score as number | null,
+        sector: stock.sector,
+      });
+    } catch {
+      // Signal snapshot is supplemental — don't block alert delivery
+    }
+
+    alerts.push({
+      symbol: sym,
+      name: stock.name,
+      sector: stock.sector,
+      alert_type: 'value_reversal',
+      sentinel_score: ss,
+      detail,
+      channel_env: 'DISCORD_CHANNEL_ALERTS',
+    });
+  }
+}
+
+async function getLatestPrice(db: ReturnType<typeof getSupabaseServerClient>, symbol: string): Promise<number> {
+  const { data } = await db
+    .from('daily_prices')
+    .select('close')
+    .eq('symbol', symbol)
+    .order('date', { ascending: false })
+    .limit(1)
+    .single();
+
+  return data?.close != null ? Number(data.close) : 0;
 }
 
 async function detectSignalAlerts(

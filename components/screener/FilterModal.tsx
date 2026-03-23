@@ -243,6 +243,21 @@ export function FilterModal({ open, onClose, filters, onApply, sectors, hasSigna
               onChange={(v) => update('sma200_trending_up_1mo', v || undefined)}
               description="The 200-day average itself is rising, not just price above it. This confirms the long-term trajectory is upward, not just a temporary bounce."
             />
+            <NumberInput
+              label="SMA 50/200 Distance"
+              value={draft.sma_distance_max_pct}
+              onChange={(v) => update('sma_distance_max_pct', v)}
+              placeholder="e.g. 5"
+              step={1}
+              suffix="%"
+              description="Max gap between SMA50 and SMA200 as a percentage. 2% finds stocks near a golden or death cross. 5% finds approaching setups."
+            />
+            <Toggle
+              label="SMA50 converging toward SMA200"
+              checked={draft.sma_converging ?? false}
+              onChange={(v) => update('sma_converging', v || undefined)}
+              description="SMA50 is below SMA200 but accelerating upward (SMA50 > SMA150) — the gap is closing and a golden cross is building. Best combined with the distance filter above."
+            />
           </section>
 
           {/* ── Price Position & Relative Strength ── */}

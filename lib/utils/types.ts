@@ -200,7 +200,89 @@ export interface SentinelScore {
   score_change_7d: number | null;
   rank: number | null;
   percentile: number | null;
+  flags: string[];
+  score_metadata: ScoreMetadata | null;
   computed_at: string;
+}
+
+// ============================================
+// COMPOSITE FLAG TYPES
+// ============================================
+
+export type ValueReversalConditionKey =
+  | 'deep_pullback'
+  | 'insider_cluster_buy'
+  | 'first_buy_12mo'
+  | 'macd_shift'
+  | 'fcf_yield'
+  | 'pe_compression';
+
+export interface DeepPullbackResult {
+  met: boolean;
+  pct_from_high: number | null;
+}
+
+export interface InsiderClusterBuyResult {
+  met: boolean;
+  buyers: string[];
+  total_value: number;
+  window_start: string | null;
+  window_end: string | null;
+}
+
+export interface FirstBuy12MoResult {
+  met: boolean;
+  insider: string | null;
+}
+
+export interface MACDShiftResult {
+  met: boolean;
+  current_histogram: number | null;
+  prior_negative_date: string | null;
+}
+
+export interface FCFYieldResult {
+  met: boolean;
+  yield_pct: number | null;
+}
+
+export interface PECompressionResult {
+  met: boolean;
+  current_pe: number | null;
+  forward_pe: number | null;
+}
+
+export interface ValueReversalDetails {
+  deep_pullback: DeepPullbackResult;
+  insider_cluster_buy: InsiderClusterBuyResult;
+  first_buy_12mo: FirstBuy12MoResult;
+  macd_shift: MACDShiftResult;
+  fcf_yield: FCFYieldResult;
+  pe_compression: PECompressionResult;
+}
+
+export interface ValueReversalResult {
+  fired: boolean;
+  conditions_met: number;
+  conviction: number;
+  details: ValueReversalDetails;
+}
+
+export interface ScoreMetadata {
+  value_reversal?: ValueReversalResult;
+}
+
+export interface CompositeFlags {
+  flags: string[];
+  metadata: ScoreMetadata;
+}
+
+export interface ValueReversalInput {
+  technicals: TechnicalSignals | null;
+  fundamentals: Fundamentals | null;
+  insiderTrades: InsiderTrade[];
+  prices: PriceBar[];
+  marketCap: number | null;
 }
 
 export interface SectorSignals {
@@ -221,6 +303,10 @@ export interface SectorSignals {
   key_drivers: string[] | null;
   top_opportunity: string | null;
   biggest_risk: string | null;
+  avg_return_1d: number | null;
+  avg_return_5d: number | null;
+  avg_return_30d: number | null;
+  avg_volume_ratio: number | null;
   updated_at: string;
 }
 
@@ -643,6 +729,8 @@ export interface ScreenerFilters {
   sma50_above_sma150?: boolean;
   sma150_above_sma200?: boolean;
   sma200_trending_up_1mo?: boolean;
+  sma_distance_max_pct?: number;
+  sma_converging?: boolean;
   within_25pct_of_52w_high?: boolean;
   within_10pct_of_52w_high?: boolean;
   above_30pct_from_52w_low?: boolean;
@@ -664,6 +752,7 @@ export interface ScreenerFilters {
   market_cap_min?: number;
   market_cap_max?: number;
   has_active_signal?: boolean;
+  has_value_reversal_signal?: boolean;
   min_signal_win_rate?: number;
 }
 

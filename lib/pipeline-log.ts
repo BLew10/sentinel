@@ -92,20 +92,19 @@ export function finishRun(run: PipelineRun): void {
 }
 
 export async function savePipelineRun(run: PipelineRun): Promise<void> {
-  try {
-    const db = getSupabaseServerClient();
-    await db.from('pipeline_runs').upsert({
-      run_id: run.run_id,
-      source: run.source,
-      started_at: run.started_at,
-      finished_at: run.finished_at,
-      status: run.status,
-      steps: run.steps,
-      error_count: run.error_count,
-    }, { onConflict: 'run_id' });
-  } catch {
-    console.error(`[pipeline-log] Failed to save run ${run.run_id} to DB, logging to console`);
-    console.log(JSON.stringify(run, null, 2));
+  const db = getSupabaseServerClient();
+  const { error } = await db.from('pipeline_runs').upsert({
+    run_id: run.run_id,
+    source: run.source,
+    started_at: run.started_at,
+    finished_at: run.finished_at,
+    status: run.status,
+    steps: run.steps,
+    error_count: run.error_count,
+  }, { onConflict: 'run_id' });
+
+  if (error) {
+    throw new Error(`Failed to save pipeline run: ${error.message}`);
   }
 }
 

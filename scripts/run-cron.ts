@@ -7,6 +7,8 @@ import { computeAndStoreScores } from '../lib/scoring';
 import { detectAlerts, recordAlert } from '../lib/alerts';
 import { sendAlertToDiscord } from '../lib/discord-send';
 import { snapshotSignal } from '../lib/signals';
+import { detectSmaCrossover } from '../lib/analyzers/technical';
+import { computeAndStoreSectorSignals } from '../lib/sectors';
 import {
   createPipelineRun, startStep, finishStep, logStepError,
   finishRun, savePipelineRun, printPipelineRun,
@@ -28,6 +30,7 @@ async function fetchPrices(run: ReturnType<typeof createPipelineRun>) {
 
   let inserted = 0;
   let errors = 0;
+  let skipped = 0;
 
   for (let i = 0; i < stocks.length; i++) {
     const { symbol } = stocks[i];
@@ -49,23 +52,32 @@ async function fetchPrices(run: ReturnType<typeof createPipelineRun>) {
       if (error) {
         errors++;
         logStepError(run, 'fetch_prices', symbol, error.message);
+        console.log(`  [!] ${symbol}: DB upsert failed — ${error.message}`);
       } else {
         inserted += rows.length;
       }
 
       if ((i + 1) % 50 === 0) console.log(`  [${i + 1}/${stocks.length}] ${inserted} rows inserted, ${errors} errors`);
     } catch (err) {
+      if (err instanceof FDApiError && err.category === 'not_found') {
+        skipped++;
+        continue;
+      }
       errors++;
-      logStepError(run, 'fetch_prices', symbol, err instanceof Error ? err.message : String(err));
+      const msg = err instanceof Error ? err.message : String(err);
+      logStepError(run, 'fetch_prices', symbol, msg);
       if (err instanceof FDApiError && err.category === 'circuit_open') {
-        console.log(`  Circuit breaker tripped at ${symbol} — aborting price fetch`);
+        console.log(`  [!] Circuit breaker tripped at ${symbol} — aborting price fetch`);
         break;
       }
+      console.log(`  [!] ${symbol}: ${err instanceof FDApiError ? `API ${err.status} (${err.category})` : msg}`);
     }
   }
 
+  if (skipped > 0) console.log(`  ${skipped} symbols not in API (404) — skipped`);
+
   finishStep(run, 'fetch_prices', errors > 0 ? 'error' : 'success', {
-    inserted, errors, stocks: stocks.length,
+    inserted, errors, skipped, stocks: stocks.length,
   });
 }
 
@@ -85,6 +97,7 @@ async function computeScores(run: ReturnType<typeof createPipelineRun>) {
   const allRsRaw: Array<{ symbol: string; rs3m: number | null; rs6m: number | null; rs12m: number | null }> = [];
   let techComputed = 0;
   let rsiBounces = 0;
+  let smaCrosses = 0;
 
   for (let i = 0; i < stocks.length; i++) {
     const { symbol } = stocks[i];
@@ -96,7 +109,7 @@ async function computeScores(run: ReturnType<typeof createPipelineRun>) {
           .eq('symbol', symbol)
           .order('date', { ascending: true }),
         db.from('technical_signals')
-          .select('rsi_14')
+          .select('rsi_14, sma_50, sma_200')
           .eq('symbol', symbol)
           .single(),
       ]);
@@ -105,6 +118,12 @@ async function computeScores(run: ReturnType<typeof createPipelineRun>) {
 
       const prevRsi = prevTechRes.data?.rsi_14 != null
         ? Number(prevTechRes.data.rsi_14)
+        : null;
+      const prevSma50 = prevTechRes.data?.sma_50 != null
+        ? Number(prevTechRes.data.sma_50)
+        : null;
+      const prevSma200 = prevTechRes.data?.sma_200 != null
+        ? Number(prevTechRes.data.sma_200)
         : null;
 
       const prices: PriceBar[] = pricesRes.data.map((p) => ({
@@ -165,6 +184,45 @@ async function computeScores(run: ReturnType<typeof createPipelineRun>) {
         console.log(`  RSI Oversold Bounce: ${symbol} (RSI ${prevRsi.toFixed(1)} -> ${newRsi.toFixed(1)})`);
       }
 
+      // SMA50/200 Golden Cross / Death Cross detection
+      const crossType = detectSmaCrossover(prevSma50, prevSma200, dbIndicators.sma_50, dbIndicators.sma_200);
+      if (crossType) {
+        const currentPrice = prices[prices.length - 1].close;
+        const isGolden = crossType === 'golden_cross';
+
+        const { data: crossScoreRow } = await db
+          .from('sentinel_scores')
+          .select('sentinel_score, technical_score, fundamental_score, earnings_ai_score, insider_score, institutional_score, news_sentiment_score, options_flow_score')
+          .eq('symbol', symbol)
+          .single();
+
+        const { data: crossStockRow } = await db
+          .from('stocks')
+          .select('sector')
+          .eq('symbol', symbol)
+          .single();
+
+        await snapshotSignal({
+          symbol,
+          triggerType: crossType,
+          triggerDetail: `SMA50 ${dbIndicators.sma_50!.toFixed(2)} crossed ${isGolden ? 'above' : 'below'} SMA200 ${dbIndicators.sma_200!.toFixed(2)} (prev SMA50: ${prevSma50!.toFixed(2)}, prev SMA200: ${prevSma200!.toFixed(2)})`,
+          priceAtSignal: currentPrice,
+          sentinelScore: crossScoreRow?.sentinel_score != null ? Number(crossScoreRow.sentinel_score) : null,
+          technicalScore: crossScoreRow?.technical_score != null ? Number(crossScoreRow.technical_score) : null,
+          fundamentalScore: crossScoreRow?.fundamental_score != null ? Number(crossScoreRow.fundamental_score) : null,
+          earningsAiScore: crossScoreRow?.earnings_ai_score != null ? Number(crossScoreRow.earnings_ai_score) : null,
+          insiderScore: crossScoreRow?.insider_score != null ? Number(crossScoreRow.insider_score) : null,
+          institutionalScore: crossScoreRow?.institutional_score != null ? Number(crossScoreRow.institutional_score) : null,
+          newsSentimentScore: crossScoreRow?.news_sentiment_score != null ? Number(crossScoreRow.news_sentiment_score) : null,
+          optionsFlowScore: crossScoreRow?.options_flow_score != null ? Number(crossScoreRow.options_flow_score) : null,
+          sector: (crossStockRow?.sector as string | null) ?? null,
+        });
+
+        smaCrosses++;
+        const label = isGolden ? 'Golden Cross' : 'Death Cross';
+        console.log(`  ${label}: ${symbol} (SMA50 ${prevSma50!.toFixed(2)} -> ${dbIndicators.sma_50!.toFixed(2)}, SMA200 ${prevSma200!.toFixed(2)} -> ${dbIndicators.sma_200!.toFixed(2)})`);
+      }
+
       techComputed++;
       if ((i + 1) % 50 === 0) console.log(`  Technicals: [${i + 1}/${stocks.length}]`);
     } catch (err) {
@@ -185,13 +243,20 @@ async function computeScores(run: ReturnType<typeof createPipelineRun>) {
   }
 
   const scoreResult = await computeAndStoreScores();
+  const hasScoreErrors = scoreResult.errors > 0;
 
-  finishStep(run, 'compute_technicals', 'success', {
+  finishStep(run, 'compute_technicals', hasScoreErrors ? 'error' : 'success', {
     technicals_computed: techComputed,
     rsi_bounces: rsiBounces,
+    sma_crosses: smaCrosses,
     scores_computed: scoreResult.computed,
     score_errors: scoreResult.errors,
   });
+
+  if (hasScoreErrors) {
+    logStepError(run, 'compute_technicals', undefined,
+      `Score upsert failed for ${scoreResult.errors}/${scoreResult.computed + scoreResult.errors} stocks`);
+  }
 }
 
 async function runAlerts(run: ReturnType<typeof createPipelineRun>) {
@@ -223,6 +288,21 @@ async function runAlerts(run: ReturnType<typeof createPipelineRun>) {
   }
 }
 
+async function computeSectors(run: ReturnType<typeof createPipelineRun>) {
+  startStep(run, 'sector_signals');
+
+  try {
+    const result = await computeAndStoreSectorSignals();
+    finishStep(run, 'sector_signals', result.errors > 0 ? 'error' : 'success', {
+      sectors_updated: result.sectors_updated,
+      errors: result.errors,
+    });
+  } catch (err) {
+    logStepError(run, 'sector_signals', undefined, err instanceof Error ? err.message : String(err));
+    finishStep(run, 'sector_signals', 'error');
+  }
+}
+
 async function main() {
   const arg = process.argv[2];
   const run = createPipelineRun('script');
@@ -234,14 +314,17 @@ async function main() {
     await fetchPrices(run);
     await computeScores(run);
     await runAlerts(run);
+    await computeSectors(run);
   } else if (arg === 'prices') {
     await fetchPrices(run);
   } else if (arg === 'scores') {
     await computeScores(run);
   } else if (arg === 'alerts') {
     await runAlerts(run);
+  } else if (arg === 'sectors') {
+    await computeSectors(run);
   } else {
-    console.error(`Unknown job "${arg}". Available: prices, scores, alerts, all`);
+    console.error(`Unknown job "${arg}". Available: prices, scores, alerts, sectors, all`);
     process.exit(1);
   }
 

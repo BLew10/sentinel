@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { computeTechnicalScore, detectTechnicalFlags } from './technical';
+import { computeTechnicalScore, detectTechnicalFlags, detectSmaCrossover } from './technical';
 import type { TechnicalSignals } from '../utils/types';
 
 function makeSignals(overrides: Partial<TechnicalSignals> = {}): TechnicalSignals {
@@ -126,5 +126,42 @@ describe('detectTechnicalFlags', () => {
   it('returns empty array when no conditions met', () => {
     const flags = detectTechnicalFlags(makeSignals({ rsi_14: 50 }));
     expect(flags).toEqual([]);
+  });
+});
+
+describe('detectSmaCrossover', () => {
+  it('detects golden cross when SMA50 crosses above SMA200', () => {
+    expect(detectSmaCrossover(98, 100, 101, 100)).toBe('golden_cross');
+  });
+
+  it('detects golden cross at exact boundary (prev equal, now above)', () => {
+    expect(detectSmaCrossover(100, 100, 100.01, 100)).toBe('golden_cross');
+  });
+
+  it('detects death cross when SMA50 crosses below SMA200', () => {
+    expect(detectSmaCrossover(102, 100, 99, 100)).toBe('death_cross');
+  });
+
+  it('detects death cross at exact boundary (prev equal, now below)', () => {
+    expect(detectSmaCrossover(100, 100, 99.99, 100)).toBe('death_cross');
+  });
+
+  it('returns null when SMA50 stays above SMA200', () => {
+    expect(detectSmaCrossover(105, 100, 106, 100)).toBeNull();
+  });
+
+  it('returns null when SMA50 stays below SMA200', () => {
+    expect(detectSmaCrossover(95, 100, 96, 100)).toBeNull();
+  });
+
+  it('returns null when any input is null', () => {
+    expect(detectSmaCrossover(null, 100, 101, 100)).toBeNull();
+    expect(detectSmaCrossover(98, null, 101, 100)).toBeNull();
+    expect(detectSmaCrossover(98, 100, null, 100)).toBeNull();
+    expect(detectSmaCrossover(98, 100, 101, null)).toBeNull();
+  });
+
+  it('returns null when all inputs are null', () => {
+    expect(detectSmaCrossover(null, null, null, null)).toBeNull();
   });
 });

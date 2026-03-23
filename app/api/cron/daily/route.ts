@@ -6,6 +6,8 @@ import { computeAllIndicators, computePercentileRank } from '@/lib/indicators';
 import { computeAndStoreScores } from '@/lib/scoring';
 import { detectAlerts, recordAlert } from '@/lib/alerts';
 import { snapshotSignal } from '@/lib/signals';
+import { computeAndStoreSectorSignals } from '@/lib/sectors';
+import { detectSmaCrossover } from '@/lib/analyzers/technical';
 import { analyzeStock } from '@/lib/analyzers/sentiment';
 import { isLLMAvailable } from '@/lib/llm';
 import {
@@ -103,6 +105,7 @@ async function step2_computeTechnicals(run: ReturnType<typeof createPipelineRun>
   const allRsRaw: Array<{ symbol: string; rs3m: number | null; rs6m: number | null; rs12m: number | null }> = [];
   let techComputed = 0;
   let signalsDetected = 0;
+  let smaCrosses = 0;
 
   for (const { symbol, sector } of stocks) {
     try {
@@ -112,7 +115,7 @@ async function step2_computeTechnicals(run: ReturnType<typeof createPipelineRun>
           .eq('symbol', symbol)
           .order('date', { ascending: true }),
         db.from('technical_signals')
-          .select('rsi_14')
+          .select('rsi_14, sma_50, sma_200')
           .eq('symbol', symbol)
           .single(),
       ]);
@@ -121,6 +124,12 @@ async function step2_computeTechnicals(run: ReturnType<typeof createPipelineRun>
 
       const prevRsi = prevTechRes.data?.rsi_14 != null
         ? Number(prevTechRes.data.rsi_14)
+        : null;
+      const prevSma50 = prevTechRes.data?.sma_50 != null
+        ? Number(prevTechRes.data.sma_50)
+        : null;
+      const prevSma200 = prevTechRes.data?.sma_200 != null
+        ? Number(prevTechRes.data.sma_200)
         : null;
 
       const prices: PriceBar[] = pricesRes.data.map((p) => ({
@@ -174,6 +183,37 @@ async function step2_computeTechnicals(run: ReturnType<typeof createPipelineRun>
         signalsDetected++;
       }
 
+      // SMA50/200 Golden Cross / Death Cross detection
+      const crossType = detectSmaCrossover(prevSma50, prevSma200, dbIndicators.sma_50, dbIndicators.sma_200);
+      if (crossType) {
+        const currentPrice = prices[prices.length - 1].close;
+        const isGolden = crossType === 'golden_cross';
+
+        const { data: crossScoreRow } = await db
+          .from('sentinel_scores')
+          .select('sentinel_score, technical_score, fundamental_score, earnings_ai_score, insider_score, institutional_score, news_sentiment_score, options_flow_score')
+          .eq('symbol', symbol)
+          .single();
+
+        await snapshotSignal({
+          symbol,
+          triggerType: crossType,
+          triggerDetail: `SMA50 ${dbIndicators.sma_50!.toFixed(2)} crossed ${isGolden ? 'above' : 'below'} SMA200 ${dbIndicators.sma_200!.toFixed(2)} (prev SMA50: ${prevSma50!.toFixed(2)}, prev SMA200: ${prevSma200!.toFixed(2)})`,
+          priceAtSignal: currentPrice,
+          sentinelScore: crossScoreRow?.sentinel_score != null ? Number(crossScoreRow.sentinel_score) : null,
+          technicalScore: crossScoreRow?.technical_score != null ? Number(crossScoreRow.technical_score) : null,
+          fundamentalScore: crossScoreRow?.fundamental_score != null ? Number(crossScoreRow.fundamental_score) : null,
+          earningsAiScore: crossScoreRow?.earnings_ai_score != null ? Number(crossScoreRow.earnings_ai_score) : null,
+          insiderScore: crossScoreRow?.insider_score != null ? Number(crossScoreRow.insider_score) : null,
+          institutionalScore: crossScoreRow?.institutional_score != null ? Number(crossScoreRow.institutional_score) : null,
+          newsSentimentScore: crossScoreRow?.news_sentiment_score != null ? Number(crossScoreRow.news_sentiment_score) : null,
+          optionsFlowScore: crossScoreRow?.options_flow_score != null ? Number(crossScoreRow.options_flow_score) : null,
+          sector: sector as string | null,
+        });
+
+        smaCrosses++;
+      }
+
       techComputed++;
     } catch (err) {
       logStepError(run, 'compute_technicals', symbol, err instanceof Error ? err.message : String(err));
@@ -197,6 +237,7 @@ async function step2_computeTechnicals(run: ReturnType<typeof createPipelineRun>
   finishStep(run, 'compute_technicals', 'success', {
     technicals_computed: techComputed,
     rsi_bounces: signalsDetected,
+    sma_crosses: smaCrosses,
     scores_computed: scoreResult.computed,
     score_errors: scoreResult.errors,
   });
@@ -301,6 +342,21 @@ async function step4_alerts(run: ReturnType<typeof createPipelineRun>) {
   }
 }
 
+async function step5_sectorSignals(run: ReturnType<typeof createPipelineRun>) {
+  startStep(run, 'sector_signals');
+
+  try {
+    const result = await computeAndStoreSectorSignals();
+    finishStep(run, 'sector_signals', result.errors > 0 ? 'error' : 'success', {
+      sectors_updated: result.sectors_updated,
+      errors: result.errors,
+    });
+  } catch (err) {
+    logStepError(run, 'sector_signals', undefined, err instanceof Error ? err.message : String(err));
+    finishStep(run, 'sector_signals', 'error');
+  }
+}
+
 export async function GET(request: Request) {
   if (!verifyCron(request)) {
     return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
@@ -312,6 +368,7 @@ export async function GET(request: Request) {
   await step2_computeTechnicals(run);
   await step3_aiAnalysis(run);
   await step4_alerts(run);
+  await step5_sectorSignals(run);
 
   finishRun(run);
   await savePipelineRun(run);

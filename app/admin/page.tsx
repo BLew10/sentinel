@@ -285,6 +285,7 @@ export default function AdminPage() {
           </div>
         )}
       </div>
+
     </div>
   );
 }
@@ -361,3 +362,4 @@ function staleness(dateStr: string): string {
   if (diffDays === 1) return '1 day old';
   return `${diffDays} days old`;
 }
+

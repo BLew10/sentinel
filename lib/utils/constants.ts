@@ -154,6 +154,15 @@ export const SCREENER_PRESETS: Record<string, ScreenerPreset> = {
     },
     sort: { field: 'sentinel_score', direction: 'desc' },
   },
+
+  value_reversal_candidates: {
+    name: 'Value Reversal Candidates',
+    description: 'Quality companies deeply oversold with fresh insider conviction buying',
+    filters: {
+      has_value_reversal_signal: true,
+    },
+    sort: { field: 'insider_score', direction: 'desc' },
+  },
 };
 
 export const ALERT_TRIGGERS = {
@@ -193,6 +202,10 @@ export const ALERT_TRIGGERS = {
   sector_rotation: {
     channel: 'DISCORD_CHANNEL_ALERTS',
   },
+  value_reversal: {
+    channel: 'DISCORD_CHANNEL_ALERTS',
+    cooldown_hours: 24,
+  },
 } as const;
 
 /** Maps screener preset keys to their closest signal_snapshots trigger_type */
@@ -205,6 +218,7 @@ export const PRESET_TO_SIGNAL_TYPE: Record<string, string> = {
   ai_high_conviction: 'score_threshold',
   insider_contrarian: 'insider_cluster_buy',
   oversold_quality: 'rsi_oversold_bounce',
+  value_reversal_candidates: 'value_reversal',
 };
 
 export const SIGNAL_TYPE_LABELS: Record<string, string> = {
@@ -214,11 +228,13 @@ export const SIGNAL_TYPE_LABELS: Record<string, string> = {
   insider_ceo_buy: 'CEO Buy',
   triple_confirmation: 'Triple Confirm',
   golden_cross: 'Golden Cross',
+  death_cross: 'Death Cross',
   stage2_breakout: 'Stage 2 Breakout',
   rsi_oversold_bounce: 'RSI Bounce',
   volume_breakout: 'Vol Breakout',
   macd_bullish_cross: 'MACD Cross',
   sector_rotation: 'Sector Rotation',
+  value_reversal: 'Value Reversal',
 };
 
 export const FINANCIAL_DATASETS_BASE_URL = 'https://api.financialdatasets.ai';

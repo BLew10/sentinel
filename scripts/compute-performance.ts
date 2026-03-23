@@ -33,7 +33,7 @@ async function main() {
   while (true) {
     const { data: page } = await db
       .from('signal_snapshots')
-      .select('trigger_type, symbol, return_7d, return_30d, return_60d, return_90d, alpha_7d, alpha_30d, alpha_60d, alpha_90d, max_drawdown_30d, max_drawdown_90d')
+      .select('trigger_type, symbol, snapshot_date, return_7d, return_30d, return_60d, return_90d, alpha_7d, alpha_30d, alpha_60d, alpha_90d, max_drawdown_30d, max_drawdown_90d')
       .not('return_7d', 'is', null)
       .range(offset, offset + PAGE - 1);
     if (!page || page.length === 0) break;
@@ -89,6 +89,9 @@ async function main() {
         avg_return: returns.reduce((a, b) => a + b, 0) / returns.length,
         median_return: median(returns),
         win_rate: (returns.filter((r) => r > 0).length / returns.length) * 100,
+        alpha_win_rate: alphas.length > 0
+          ? (alphas.filter((a) => a > 0).length / alphas.length) * 100
+          : null,
         avg_alpha: alphas.length > 0 ? alphas.reduce((a, b) => a + b, 0) / alphas.length : null,
         median_alpha: median(alphas),
         avg_max_drawdown: drawdowns.length > 0 ? drawdowns.reduce((a, b) => a + b, 0) / drawdowns.length : null,

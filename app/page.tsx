@@ -283,6 +283,7 @@ export default async function Dashboard() {
                 <h3 className="font-display font-bold text-lg">
                   {({
                     golden_cross: 'Golden Cross',
+                    death_cross: 'Death Cross',
                     stage2_breakout: 'Stage 2 Breakout',
                     rsi_oversold_bounce: 'RSI Oversold Bounce',
                     volume_breakout: 'Volume Breakout',

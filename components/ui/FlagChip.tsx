@@ -50,6 +50,9 @@ const FLAG_META: Record<string, { label: string; color: 'green' | 'red' | 'amber
   INSIDER_FILING_NEAR_SPIKE: { label: 'Insider+Spike', color: 'purple', tooltip: 'Insider filing within 2 days of a volume anomaly — warrants investigation' },
   PRICE_SPIKE_REVERSAL: { label: 'Spike Reversal', color: 'red', tooltip: 'Stock spiked 100%+ then reversed 20%+ — potential blow-off top pattern' },
   PENNY_STOCK_WARNING: { label: 'Penny Stock', color: 'red', tooltip: 'Price under $5 with small market cap — higher volatility and risk' },
+
+  // Composite
+  VALUE_REVERSAL_CANDIDATE: { label: 'Value Reversal', color: 'purple', tooltip: 'Quality company deeply oversold with insider conviction buying — multi-factor convergence signal' },
 };
 
 const COLOR_CLASSES: Record<string, string> = {

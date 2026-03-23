@@ -30,6 +30,7 @@ const SIGNAL_LABELS: Record<string, string> = {
   insider_ceo_buy: 'CEO Buy',
   triple_confirmation: 'Triple Confirmation',
   golden_cross: 'Golden Cross',
+  death_cross: 'Death Cross',
   stage2_breakout: 'Stage 2 Breakout',
   rsi_oversold_bounce: 'RSI Oversold Bounce',
   volume_breakout: 'Volume Breakout',
@@ -187,8 +188,9 @@ export function SignalsClient({ performance, recentSignals, bucketPerformance }:
               </table>
             </div>
             <p className="text-text-tertiary text-[11px]">
-              Win Rate = % of signals where the stock had a positive {periodLabel.toLowerCase()} return.
+              Win Rate = % of signals where the stock had a positive {periodLabel.toLowerCase()} return (raw, not market-adjusted).
               Alpha = stock return minus SPY return over the same period — positive alpha means the signal outperformed the market.
+              Discord alerts use alpha and alpha-based win rate ("beat mkt") to avoid misleading results during market-wide drawdowns.
             </p>
           </div>
         )

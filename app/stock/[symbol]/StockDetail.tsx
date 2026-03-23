@@ -10,7 +10,8 @@ import { formatCurrency, formatPercent, formatMarketCap, generateActionSummary, 
 import { SignalsPanel } from './SignalsPanel';
 import type { TechnicalFlag } from '@/lib/analyzers/technical';
 import type { FundamentalFlag } from '@/lib/analyzers/fundamental';
-import type { Fundamentals, TechnicalSignals, SentinelScore, InsiderTrade, InsiderFlag, DetectedSignal, ChartEvent } from '@/lib/utils/types';
+import { ValueReversalBadge } from '@/components/ValueReversalBadge';
+import type { Fundamentals, TechnicalSignals, SentinelScore, InsiderTrade, InsiderFlag, DetectedSignal, ChartEvent, ValueReversalResult } from '@/lib/utils/types';
 
 interface PriceBar {
   date: string;
@@ -35,6 +36,7 @@ interface Props {
   latestPrice: PriceBar | null;
   priceChange: { absolute: number; percent: number } | null;
   chartEvents: ChartEvent[];
+  valueReversal?: ValueReversalResult | null;
 }
 
 const TABS = ['Overview', 'Fundamentals', 'Technicals', 'Insider Activity'] as const;
@@ -297,7 +299,7 @@ function CopyPromptButton({ getText }: { getText: () => string }) {
 export function StockDetail({
   stock, prices, fundamentals, technicals, scores,
   insiderTrades, technicalFlags, fundamentalFlags, insiderFlags, signals,
-  latestPrice, priceChange, chartEvents,
+  latestPrice, priceChange, chartEvents, valueReversal,
 }: Props) {
   const [activeTab, setActiveTab] = useState<Tab>('Overview');
 
@@ -368,6 +370,9 @@ export function StockDetail({
           )}
         </div>
       )}
+
+      {/* Value Reversal Badge */}
+      {valueReversal && <ValueReversalBadge data={valueReversal} />}
 
       {/* Flags */}
       {allFlags.length > 0 && (

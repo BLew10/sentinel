@@ -128,3 +128,23 @@ export function detectTechnicalFlags(signals: TechnicalSignals): TechnicalFlag[]
 
   return flags;
 }
+
+export type SmaCrossoverType = 'golden_cross' | 'death_cross';
+
+/**
+ * Detects a true SMA50/SMA200 crossover by comparing previous and current values.
+ * Returns the crossover type if one occurred, or null if no cross happened.
+ */
+export function detectSmaCrossover(
+  prevSma50: number | null,
+  prevSma200: number | null,
+  newSma50: number | null,
+  newSma200: number | null,
+): SmaCrossoverType | null {
+  if (prevSma50 == null || prevSma200 == null || newSma50 == null || newSma200 == null) {
+    return null;
+  }
+  if (prevSma50 <= prevSma200 && newSma50 > newSma200) return 'golden_cross';
+  if (prevSma50 >= prevSma200 && newSma50 < newSma200) return 'death_cross';
+  return null;
+}

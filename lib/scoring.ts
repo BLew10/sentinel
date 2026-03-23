@@ -3,6 +3,7 @@ import { SCORE_WEIGHTS } from './utils/constants';
 import { computeTechnicalScore } from './analyzers/technical';
 import { computeFundamentalScore } from './analyzers/fundamental';
 import { computeInsiderScore, computeInstitutionalScore } from './analyzers/insider';
+import { detectCompositeFlags } from './analyzers/composite-flags';
 import type {
   TechnicalSignals,
   Fundamentals,
@@ -10,6 +11,9 @@ import type {
   InstitutionalSignals,
   NewsSentiment,
   ComputedSentinelScore,
+  InsiderTrade,
+  PriceBar,
+  CompositeFlags,
 } from './utils/types';
 
 function clamp(value: number, min = 0, max = 100): number {
@@ -78,21 +82,26 @@ export async function computeAndStoreScores(): Promise<{
 
   const { data: stocks } = await db
     .from('stocks')
-    .select('symbol')
+    .select('symbol, market_cap')
     .eq('is_active', true)
     .order('symbol');
 
   if (!stocks) return { computed: 0, errors: 0 };
+
+  const fourteenMonthsAgo = new Date();
+  fourteenMonthsAgo.setMonth(fourteenMonthsAgo.getMonth() - 14);
+  const insiderCutoff = fourteenMonthsAgo.toISOString().split('T')[0];
 
   const allScores: Array<{
     symbol: string;
     score: ComputedSentinelScore;
     scoreChange1d: number | null;
     scoreChange7d: number | null;
+    composite: CompositeFlags;
   }> = [];
 
-  for (const { symbol } of stocks) {
-    const [techRes, fundRes, insiderRes, instRes, newsRes, prevScoreRes, aiRes] = await Promise.all([
+  for (const { symbol, market_cap } of stocks) {
+    const [techRes, fundRes, insiderRes, instRes, newsRes, prevScoreRes, aiRes, tradesRes, pricesRes] = await Promise.all([
       db.from('technical_signals').select('*').eq('symbol', symbol).single(),
       db.from('fundamentals').select('*').eq('symbol', symbol).single(),
       db.from('insider_signals').select('*').eq('symbol', symbol).single(),
@@ -100,19 +109,44 @@ export async function computeAndStoreScores(): Promise<{
       db.from('news_sentiment').select('*').eq('symbol', symbol).single(),
       db.from('sentinel_scores').select('sentinel_score, computed_at').eq('symbol', symbol).single(),
       db.from('earnings_analysis').select('conviction_score').eq('symbol', symbol).order('analyzed_at', { ascending: false }).limit(1).single(),
+      db.from('insider_trades').select('*').eq('symbol', symbol).gte('transaction_date', insiderCutoff).order('transaction_date', { ascending: false }),
+      db.from('daily_prices').select('date, open, high, low, close, volume').eq('symbol', symbol).order('date', { ascending: false }).limit(60),
     ]);
 
     const earningsAiScore = aiRes.data?.conviction_score != null
       ? clamp(Number(aiRes.data.conviction_score))
       : undefined;
 
+    const technicals = techRes.data as TechnicalSignals | null;
+    const fundamentals = fundRes.data as Fundamentals | null;
+
     const score = computeCompositeScore({
-      technical: techRes.data as TechnicalSignals | null,
-      fundamentals: fundRes.data as Fundamentals | null,
+      technical: technicals,
+      fundamentals,
       insider: insiderRes.data as InsiderSignals | null,
       institutional: instRes.data as InstitutionalSignals | null,
       news: newsRes.data as NewsSentiment | null,
       earningsAiScore,
+    });
+
+    const insiderTrades = (tradesRes.data ?? []) as unknown as InsiderTrade[];
+    const prices: PriceBar[] = (pricesRes.data ?? [])
+      .reverse()
+      .map((p: Record<string, unknown>) => ({
+        date: p.date as string,
+        open: Number(p.open),
+        high: Number(p.high),
+        low: Number(p.low),
+        close: Number(p.close),
+        volume: Number(p.volume),
+      }));
+
+    const composite = detectCompositeFlags({
+      technicals,
+      fundamentals,
+      insiderTrades,
+      prices,
+      marketCap: market_cap ? Number(market_cap) : null,
     });
 
     const prevScore = prevScoreRes.data?.sentinel_score as number | null;
@@ -126,7 +160,7 @@ export async function computeAndStoreScores(): Promise<{
       if (daysSince <= 8) scoreChange7d = score.sentinel_score - prevScore;
     }
 
-    allScores.push({ symbol, score, scoreChange1d, scoreChange7d });
+    allScores.push({ symbol, score, scoreChange1d, scoreChange7d, composite });
   }
 
   // Rank by sentinel_score descending
@@ -134,9 +168,10 @@ export async function computeAndStoreScores(): Promise<{
 
   let computed = 0;
   let errors = 0;
+  let firstError: string | null = null;
 
   for (let i = 0; i < allScores.length; i++) {
-    const { symbol, score, scoreChange1d, scoreChange7d } = allScores[i];
+    const { symbol, score, scoreChange1d, scoreChange7d, composite } = allScores[i];
     const rank = i + 1;
     const percentile = Math.round(((allScores.length - rank) / allScores.length) * 100);
 
@@ -149,11 +184,21 @@ export async function computeAndStoreScores(): Promise<{
         percentile,
         score_change_1d: scoreChange1d,
         score_change_7d: scoreChange7d,
+        flags: composite.flags,
+        score_metadata: composite.metadata,
         computed_at: new Date().toISOString(),
       }, { onConflict: 'symbol' });
 
-    if (error) errors++;
-    else computed++;
+    if (error) {
+      errors++;
+      if (!firstError) firstError = `${symbol}: ${error.message}`;
+    } else {
+      computed++;
+    }
+  }
+
+  if (firstError && errors > 0) {
+    console.log(`  [!] Score upsert errors: ${errors}/${allScores.length} — first: ${firstError}`);
   }
 
   return { computed, errors };

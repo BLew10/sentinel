@@ -84,7 +84,14 @@ async function getSectors() {
   return sectors;
 }
 
-export default async function ScreenerPage() {
+export default async function ScreenerPage({
+  searchParams,
+}: {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}) {
+  const params = await searchParams;
+  const sectorParam = typeof params.sector === 'string' ? params.sector : undefined;
+
   const [sectors, signalPerformance, activeSignals] = await Promise.all([
     getSectors(),
     getSignalPerformanceMap(),
@@ -105,6 +112,7 @@ export default async function ScreenerPage() {
         initialData={rows}
         sectors={sectors}
         signalPerformance={signalPerformance}
+        initialSector={sectorParam}
       />
     </div>
   );

@@ -149,6 +149,34 @@ export function verdictBgColor(verdict: ScoreVerdict): string {
   }
 }
 
+export function formatFlow(value: number | null): string {
+  if (value == null) return '—';
+  const sign = value >= 0 ? '+' : '';
+  const abs = Math.abs(value);
+  if (abs >= 1e9) return `${sign}$${(value / 1e9).toFixed(1)}B`;
+  if (abs >= 1e6) return `${sign}$${(value / 1e6).toFixed(1)}M`;
+  if (abs >= 1e3) return `${sign}$${(value / 1e3).toFixed(0)}K`;
+  return `${sign}$${value.toFixed(0)}`;
+}
+
+export const SECTOR_COLUMN_EXPLANATIONS: Record<string, string> = {
+  avg_sentinel_score: 'Average Sentinel Score across all stocks in the sector. Higher = more bullish overall conviction.',
+  avg_technical_score: 'Average Technical Score. Reflects price trend, momentum, and relative strength across the sector.',
+  avg_earnings_ai_score: 'Average AI Analysis Score across the sector. Higher = AI sees more collective upside.',
+  sector_rs_rank: 'Relative strength rank among all 11 sectors. #1 = strongest price performance.',
+  pct_above_sma50: 'Percentage of stocks trading above their 50-day moving average. Measures short-term breadth.',
+  pct_above_sma200: 'Percentage of stocks above their 200-day moving average. Measures long-term trend health.',
+  net_insider_flow_30d: 'Net insider buying/selling across the sector in the last 30 days. Positive = net buying.',
+  net_institutional_flow: 'Net institutional inflow/outflow across the sector. Positive = institutions adding exposure.',
+  stocks_above_75_score: 'Number of stocks with a Sentinel Score of 75 or higher — high-conviction picks in the sector.',
+  total_stocks: 'Total number of actively tracked stocks in this sector.',
+  rotation_signal: 'Money flow direction — "Inflow" if insider + institutional net positive, "Outflow" if negative.',
+  avg_return_1d: 'Average 1-day return across sector stocks.',
+  avg_return_5d: 'Average 5-day (1 week) return across sector stocks.',
+  avg_return_30d: 'Average 30-day return across sector stocks.',
+  avg_volume_ratio: 'Average volume vs. 50-day average across sector. Above 1.5 = elevated interest.',
+};
+
 export const COLUMN_EXPLANATIONS: Record<string, string> = {
   sentinel_score: 'Composite score (0-100) combining technical, fundamental, insider, and AI signals. Higher = more bullish conviction.',
   technical_score: 'Measures price trend, momentum (RSI/MACD), and relative strength. 75+ = strong uptrend.',
