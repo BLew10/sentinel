@@ -41,6 +41,7 @@ interface ScreenerRow {
   num_buyers_30d: number | null;
   num_sellers_30d: number | null;
   net_buy_value_30d: number | null;
+  flags: string[];
   active_signals: ActiveSignal[];
 }
 
@@ -147,6 +148,9 @@ function matchesFilters(
   if (filters.sectors && filters.sectors.length > 0 && !filters.sectors.includes(row.sector ?? '')) return false;
   if (filters.market_cap_min != null && (row.market_cap ?? 0) < filters.market_cap_min) return false;
   if (filters.market_cap_max != null && (row.market_cap ?? Infinity) > filters.market_cap_max) return false;
+
+  // Flag filters
+  if (filters.has_flag && !row.flags.includes(filters.has_flag)) return false;
 
   // Signal performance filters
   if (filters.has_active_signal && row.active_signals.length === 0) return false;

@@ -677,6 +677,35 @@ export interface FDNewsArticle {
   description: string | null;
 }
 
+export interface FDAnalystEstimate {
+  fiscal_period: string;
+  period: 'annual' | 'quarterly';
+  revenue: number | null;
+  earnings_per_share: number | null;
+}
+
+export interface FDEarningsTimeDimension {
+  fiscal_period: string | null;
+  currency: string | null;
+  revenue: number | null;
+  estimated_revenue: number | null;
+  revenue_surprise: 'BEAT' | 'MISS' | 'MEET' | null;
+  earnings_per_share: number | null;
+  estimated_earnings_per_share: number | null;
+  eps_surprise: 'BEAT' | 'MISS' | 'MEET' | null;
+  net_income: number | null;
+  free_cash_flow: number | null;
+}
+
+export interface FDEarnings {
+  ticker: string;
+  report_period: string;
+  fiscal_period: string | null;
+  currency: string | null;
+  quarterly: FDEarningsTimeDimension | null;
+  annual: FDEarningsTimeDimension | null;
+}
+
 // ============================================
 // ERROR TYPES
 // ============================================
@@ -753,6 +782,7 @@ export interface ScreenerFilters {
   market_cap_max?: number;
   has_active_signal?: boolean;
   has_value_reversal_signal?: boolean;
+  has_flag?: string;
   min_signal_win_rate?: number;
 }
 
@@ -834,6 +864,33 @@ export interface PriceSpikeReversal {
   spike_pct: number;
   reversal_pct: number;
   days_to_peak: number;
+}
+
+export interface BollingerBands {
+  upper: number;
+  middle: number;
+  lower: number;
+  width: number;
+  pct_b: number;
+  is_squeeze: boolean;
+}
+
+export type DivergenceType = 'bullish' | 'bearish';
+
+export interface RSIDivergence {
+  type: DivergenceType;
+  price_date_1: string;
+  price_date_2: string;
+  price_1: number;
+  price_2: number;
+  rsi_1: number;
+  rsi_2: number;
+}
+
+export interface VolumeDryUp {
+  consecutive_low_volume_days: number;
+  avg_ratio: number;
+  price_range_pct: number;
 }
 
 export type SignalSeverity = 'HIGH' | 'WATCH' | 'CAUTION' | 'RISK' | 'INVESTIGATE';

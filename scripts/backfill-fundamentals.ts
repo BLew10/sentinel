@@ -3,8 +3,9 @@ import { getSupabaseServerClient } from '../lib/db';
 import {
   getFinancialMetricsSnapshot,
   getIncomeStatements,
+  getCashFlowStatements,
 } from '../lib/financial-datasets';
-import type { FDFinancialMetricsSnapshot, FDIncomeStatement } from '../lib/utils/types';
+import type { FDFinancialMetricsSnapshot, FDIncomeStatement, FDCashFlowStatement } from '../lib/utils/types';
 
 const DELAY_BETWEEN_SYMBOLS_MS = 150; // 1,000 req/min on Developer plan (2 concurrent requests per symbol)
 
@@ -24,6 +25,7 @@ function buildFundamentalsRow(
   symbol: string,
   snapshot: FDFinancialMetricsSnapshot | null,
   quarterlyIncome: FDIncomeStatement[],
+  cashFlowStatements: FDCashFlowStatement[],
 ) {
   const sorted = quarterlyIncome
     .filter((s) => s.period === 'quarterly')
@@ -49,10 +51,19 @@ function buildFundamentalsRow(
   const revenueGrowthYoY = computeGrowth(latest?.revenue, yearAgoQuarter?.revenue);
   const earningsGrowthYoY = computeGrowth(latest?.net_income, yearAgoQuarter?.net_income);
 
+  const latestCashFlow = cashFlowStatements
+    .filter((s) => s.period === 'quarterly')
+    .sort((a, b) => new Date(b.report_period).getTime() - new Date(a.report_period).getTime())[0];
+
+  const fcf = latestCashFlow?.free_cash_flow
+    ?? (latestCashFlow?.operating_cash_flow != null && latestCashFlow?.capital_expenditure != null
+      ? latestCashFlow.operating_cash_flow + latestCashFlow.capital_expenditure
+      : null);
+
   return {
     symbol,
     pe_ratio: snapshot?.price_to_earnings_ratio ?? null,
-    forward_pe: null, // not directly available from snapshot
+    forward_pe: null, // computed from analyst estimates in estimate-revision pipeline
     peg_ratio: snapshot?.peg_ratio ?? null,
     ps_ratio: snapshot?.price_to_sales_ratio ?? null,
     pb_ratio: snapshot?.price_to_book_ratio ?? null,
@@ -67,8 +78,10 @@ function buildFundamentalsRow(
     roa: snapshot?.return_on_assets ?? null,
     debt_to_equity: snapshot?.debt_to_equity ?? null,
     current_ratio: snapshot?.current_ratio ?? null,
-    free_cash_flow: null, // would need separate cash flow fetch
-    dividend_yield: null,
+    free_cash_flow: fcf,
+    dividend_yield: snapshot?.payout_ratio != null && snapshot?.earnings_per_share != null
+      ? null // payout_ratio alone doesn't give dividend_yield without price
+      : null,
     updated_at: new Date().toISOString(),
   };
 }
@@ -98,9 +111,12 @@ async function main() {
     const { symbol } = stocks[i];
 
     try {
-      const [snapshot, incomeStatements] = await Promise.all([
+      const [snapshot, incomeStatements, cashFlowStatements] = await Promise.all([
         getFinancialMetricsSnapshot(symbol).catch(() => null),
         getIncomeStatements(symbol, { period: 'quarterly', limit: 8 }).catch(
+          () => [],
+        ),
+        getCashFlowStatements(symbol, { period: 'quarterly', limit: 4 }).catch(
           () => [],
         ),
       ]);
@@ -112,7 +128,7 @@ async function main() {
         continue;
       }
 
-      const row = buildFundamentalsRow(symbol, snapshot, incomeStatements);
+      const row = buildFundamentalsRow(symbol, snapshot, incomeStatements, cashFlowStatements);
 
       // Also update market_cap in the stocks table
       if (snapshot?.market_cap) {

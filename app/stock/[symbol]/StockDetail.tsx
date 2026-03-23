@@ -12,6 +12,7 @@ import type { TechnicalFlag } from '@/lib/analyzers/technical';
 import type { FundamentalFlag } from '@/lib/analyzers/fundamental';
 import { ValueReversalBadge } from '@/components/ValueReversalBadge';
 import type { Fundamentals, TechnicalSignals, SentinelScore, InsiderTrade, InsiderFlag, DetectedSignal, ChartEvent, ValueReversalResult } from '@/lib/utils/types';
+import type { Setup } from '@/lib/setups';
 
 interface PriceBar {
   date: string;
@@ -20,6 +21,16 @@ interface PriceBar {
   low: number;
   close: number;
   volume: number;
+}
+
+interface LatestAi {
+  conviction_score: number | null;
+  one_line_summary: string | null;
+  key_positives: string[] | null;
+  key_concerns: string[] | null;
+  forward_catalysts: string[] | null;
+  management_tone: string | null;
+  analyzed_at: string | null;
 }
 
 interface Props {
@@ -37,6 +48,9 @@ interface Props {
   priceChange: { absolute: number; percent: number } | null;
   chartEvents: ChartEvent[];
   valueReversal?: ValueReversalResult | null;
+  setups?: Setup[];
+  latestAi?: LatestAi | null;
+  allFlags?: string[];
 }
 
 const TABS = ['Overview', 'Fundamentals', 'Technicals', 'Insider Activity'] as const;
@@ -134,6 +148,79 @@ function ActionSummary({
   );
 }
 
+const SETUP_ICONS: Record<string, string> = {
+  volatility_squeeze: '◉',
+  accumulation_detected: '◈',
+  pre_earnings_catalyst: '◎',
+  reversal_forming: '↺',
+  momentum_continuation: '▲',
+  value_reversal: '◇',
+};
+
+function SetupAnalysisPanel({ setups, latestAi }: { setups: Setup[]; latestAi: LatestAi | null }) {
+  const topSetup = setups[0];
+
+  return (
+    <div className="rounded-lg border border-purple/30 bg-purple-bg p-5 space-y-4">
+      <div className="flex items-start justify-between">
+        <div>
+          <div className="flex items-center gap-2 mb-1">
+            <span className="text-purple text-base">{SETUP_ICONS[topSetup.type] ?? '◉'}</span>
+            <span className="font-display font-bold text-purple text-sm uppercase tracking-wider">{topSetup.name}</span>
+            <div className="flex items-center gap-0.5 ml-1" title={`Conviction: ${topSetup.conviction}/5`}>
+              {Array.from({ length: 5 }, (_, i) => (
+                <span key={i} className={`w-1.5 h-1.5 rounded-full ${i < topSetup.conviction ? 'bg-purple' : 'bg-purple/20'}`} />
+              ))}
+            </div>
+          </div>
+          <p className="text-text-secondary text-sm leading-relaxed max-w-xl">{topSetup.thesis}</p>
+        </div>
+        <span className="text-[10px] px-2 py-0.5 rounded bg-purple/10 border border-purple/20 text-purple font-display shrink-0 ml-3">
+          {topSetup.timeframe}
+        </span>
+      </div>
+
+      <div>
+        <p className="text-[10px] text-purple/70 uppercase tracking-wider font-medium mb-2">What to Watch</p>
+        <div className="space-y-1.5">
+          {topSetup.watchFor.map((item, i) => (
+            <div key={i} className="flex items-start gap-2">
+              <span className="text-purple text-xs mt-0.5 shrink-0">›</span>
+              <p className="text-text-secondary text-xs leading-relaxed">{item}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {latestAi?.one_line_summary && (
+        <div className="border-t border-purple/20 pt-3">
+          <p className="text-[10px] text-purple/70 uppercase tracking-wider font-medium mb-1">AI Analysis</p>
+          <p className="text-text-secondary text-xs leading-relaxed">{latestAi.one_line_summary}</p>
+          {latestAi.forward_catalysts && latestAi.forward_catalysts.length > 0 && (
+            <div className="flex flex-wrap gap-1.5 mt-2">
+              {latestAi.forward_catalysts.slice(0, 3).map((c, i) => (
+                <span key={i} className="text-[10px] px-1.5 py-0.5 rounded bg-purple/10 border border-purple/15 text-purple/80">
+                  {c}
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {setups.length > 1 && (
+        <div className="border-t border-purple/20 pt-3 flex flex-wrap gap-2">
+          {setups.slice(1).map((s) => (
+            <span key={s.type} className="text-[10px] px-2 py-0.5 rounded bg-purple/10 border border-purple/15 text-purple/80 font-medium">
+              {s.name}
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function n(val: unknown): number | null {
   if (val == null) return null;
   return Number(val);
@@ -177,7 +264,7 @@ function buildAgentPrompt(
     lines.push('## Sentinel Scores');
     lines.push(`Composite: ${scores.sentinel_score ?? 'N/A'}/100 | Rank: #${scores.rank ?? 'N/A'} (top ${scores.percentile ?? 'N/A'}%)`);
     lines.push(`Technical: ${scores.technical_score ?? 'N/A'} | Fundamental: ${scores.fundamental_score ?? 'N/A'} | AI Analysis: ${scores.earnings_ai_score ?? 'N/A'}`);
-    lines.push(`Insider: ${scores.insider_score ?? 'N/A'} | Institutional: ${scores.institutional_score ?? 'N/A'} | Sentiment: ${scores.news_sentiment_score ?? 'N/A'} | Options Flow: ${scores.options_flow_score ?? 'N/A'}`);
+    lines.push(`Insider: ${scores.insider_score ?? 'N/A'} | Institutional: ${scores.institutional_score ?? 'N/A'} | Sentiment: ${scores.news_sentiment_score ?? 'N/A'} | Estimate Revision: ${scores.options_flow_score ?? 'N/A'}`);
     if (scores.score_change_1d != null) lines.push(`Score change (1d): ${scores.score_change_1d > 0 ? '+' : ''}${scores.score_change_1d}`);
     if (scores.score_change_7d != null) lines.push(`Score change (7d): ${scores.score_change_7d > 0 ? '+' : ''}${scores.score_change_7d}`);
     lines.push('');
@@ -300,10 +387,11 @@ export function StockDetail({
   stock, prices, fundamentals, technicals, scores,
   insiderTrades, technicalFlags, fundamentalFlags, insiderFlags, signals,
   latestPrice, priceChange, chartEvents, valueReversal,
+  setups, latestAi, allFlags: passedFlags,
 }: Props) {
   const [activeTab, setActiveTab] = useState<Tab>('Overview');
 
-  const allFlags = [...technicalFlags, ...fundamentalFlags, ...insiderFlags];
+  const allFlags = passedFlags ?? [...technicalFlags, ...fundamentalFlags, ...insiderFlags];
 
   return (
     <div className="max-w-7xl mx-auto space-y-6">
@@ -356,7 +444,7 @@ export function StockDetail({
             ['Insider', scores.insider_score, 'Insider buying/selling patterns'],
             ['Institutional', scores.institutional_score, 'Hedge fund & institutional flows'],
             ['Sentiment', scores.news_sentiment_score, 'News & market sentiment'],
-            ['Flow', scores.options_flow_score, 'Options flow signals'],
+            ['Est. Rev.', scores.options_flow_score, 'Analyst estimate revision momentum'],
           ] as const).map(([label, val, tip]) => (
             <div key={label} className="flex items-center gap-1.5" title={tip}>
               <span className="text-text-tertiary text-xs cursor-help border-b border-dotted border-text-tertiary/30">{label}</span>
@@ -381,6 +469,11 @@ export function StockDetail({
             <FlagChip key={flag} flag={flag} />
           ))}
         </div>
+      )}
+
+      {/* Setup Analysis Panel */}
+      {setups && setups.length > 0 && (
+        <SetupAnalysisPanel setups={setups} latestAi={latestAi ?? null} />
       )}
 
       {/* Action Summary */}

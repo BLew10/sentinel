@@ -1,10 +1,19 @@
 import { getSupabaseServerClient } from './db';
 import { getSECFilings } from './financial-datasets';
-import { detectVolumeAnomalies, detectPriceSpikeReversal } from './indicators';
+import {
+  detectVolumeAnomalies,
+  detectPriceSpikeReversal,
+  computeBollingerBands,
+  computeOBVSlope,
+  detectRSIDivergence,
+  detectVolumeDryUp,
+} from './indicators';
 import { detectFilingFlags } from './analyzers/sec-filings';
 import { snapshotSignal } from './signals';
 import { formatVolume } from './utils/format';
 import type { SentinelScore, InsiderTrade, PriceBar, FDSECFiling, ValueReversalResult } from './utils/types';
+
+export type SignalNature = 'predictive' | 'confirmatory';
 
 export interface Alert {
   symbol: string;
@@ -14,6 +23,7 @@ export interface Alert {
   sentinel_score: number;
   detail: string;
   channel_env: string;
+  signal_nature: SignalNature;
 }
 
 function fmtDollars(value: number): string {
@@ -73,6 +83,7 @@ export async function detectAlerts(): Promise<Alert[]> {
         sentinel_score: ss,
         detail: `Score hit **${ss}**/100${change1d}${topStr}\nTechnical ${tech} · Fundamental ${fund} · Insider ${ins} · Institutional ${inst}\n_${today()}_`,
         channel_env: 'DISCORD_CHANNEL_ALERTS',
+        signal_nature: 'confirmatory',
       });
     }
 
@@ -86,6 +97,7 @@ export async function detectAlerts(): Promise<Alert[]> {
         sentinel_score: ss,
         detail: `Score dropped **${prev} → ${ss}** (${score.score_change_1d} points) in 1 day\nTechnical ${tech} · Fundamental ${fund} · Insider ${ins}\n_Was ranked in the top stocks yesterday — investigate what changed_\n_${today()}_`,
         channel_env: 'DISCORD_CHANNEL_ALERTS',
+        signal_nature: 'confirmatory',
       });
     }
 
@@ -98,6 +110,7 @@ export async function detectAlerts(): Promise<Alert[]> {
         sentinel_score: ss,
         detail: `Three independent signal categories are aligned bullish:\n• Technical: **${tech}** (price trend + momentum)\n• Insider: **${ins}** (insider buying activity)\n• Institutional: **${inst}** (fund flows)\nComposite score: **${ss}**/100\n_${today()}_`,
         channel_env: 'DISCORD_CHANNEL_ALERTS',
+        signal_nature: 'confirmatory',
       });
     }
   }
@@ -126,6 +139,7 @@ export async function detectAlerts(): Promise<Alert[]> {
         sentinel_score: (scoreRow as unknown as SentinelScore).sentinel_score ?? 0,
         detail: `${(sig.trigger_detail as string) ?? 'RSI crossed above 30 from oversold'}\nPrice at signal: **${price}** · Date: ${sig.snapshot_date}\nSentinel Score: **${(scoreRow as unknown as SentinelScore).sentinel_score ?? 0}**/100\n_Oversold bounce — selling may be exhausted, watch for follow-through_`,
         channel_env: 'DISCORD_CHANNEL_ALERTS',
+        signal_nature: 'confirmatory',
       });
     }
   }
@@ -163,6 +177,7 @@ export async function detectAlerts(): Promise<Alert[]> {
         sentinel_score: ss,
         detail: `${emoji} **${label}** detected on ${sig.snapshot_date}\n${(sig.trigger_detail as string) ?? `SMA50 crossed ${isGolden ? 'above' : 'below'} SMA200`}\nPrice at signal: **${price}** · Sentinel Score: **${ss}**/100\n${commentary}`,
         channel_env: 'DISCORD_CHANNEL_ALERTS',
+        signal_nature: 'confirmatory',
       });
     }
   }
@@ -203,6 +218,7 @@ export async function detectAlerts(): Promise<Alert[]> {
           sentinel_score: (scoreRow as unknown as SentinelScore).sentinel_score ?? 0,
           detail: `**${buys.length} insiders** bought in the last 30 days — total ${fmtDollars(totalValue)}\n${buyerDetails}\n_Multiple insiders buying at once is historically one of the strongest signals_`,
           channel_env: 'DISCORD_CHANNEL_INSIDERS',
+          signal_nature: 'confirmatory',
         });
       }
 
@@ -223,6 +239,7 @@ export async function detectAlerts(): Promise<Alert[]> {
             sentinel_score: (scoreRow as unknown as SentinelScore).sentinel_score ?? 0,
             detail: `CEO **${buy.insider_name}** purchased ${shares}${price} — **${val}**\nFiled: ${buy.transaction_date}\n_CEO open-market purchases are the highest-conviction insider signal_`,
             channel_env: 'DISCORD_CHANNEL_INSIDERS',
+            signal_nature: 'confirmatory',
           });
           break;
         }
@@ -235,6 +252,9 @@ export async function detectAlerts(): Promise<Alert[]> {
 
   // Signal-based alerts: volume spikes, SEC filings, price spike reversals
   await detectSignalAlerts(scores, recentAlerts, alerts);
+
+  // Predictive alerts: BB squeeze, RSI divergence, OBV accumulation, volume dry-up, SMA convergence
+  await detectPredictiveAlerts(scores, recentAlerts, alerts);
 
   return alerts;
 }
@@ -342,6 +362,7 @@ async function detectValueReversalAlerts(
       sentinel_score: ss,
       detail,
       channel_env: 'DISCORD_CHANNEL_ALERTS',
+      signal_nature: 'predictive',
     });
   }
 }
@@ -408,6 +429,7 @@ async function detectSignalAlerts(
             sentinel_score: ss,
             detail: `**${formatVolume(recentAnomaly.volume)}** shares traded on ${recentAnomaly.date} — **${ratioStr}** the 50-day average (${formatVolume(recentAnomaly.avg_volume_50d)}/day)\nSeverity: **${recentAnomaly.anomaly_severity.toUpperCase()}** · Sentinel Score: ${ss}\n_Extreme volume precedes major moves — investigate what's driving the activity_`,
             channel_env: 'DISCORD_CHANNEL_ALERTS',
+            signal_nature: 'confirmatory',
           });
         }
 
@@ -423,6 +445,7 @@ async function detectSignalAlerts(
               sentinel_score: ss,
               detail: `Stock spiked **+${spike.spike_pct}%** in ${spike.days_to_peak} days ($${spike.spike_start_price.toFixed(2)} → $${spike.spike_peak_price.toFixed(2)}), now reversed **-${spike.reversal_pct}%** from peak\nPeak: ${spike.spike_peak_date} · Current: $${spike.current_price.toFixed(2)}\n_Spike-and-fade pattern — often a speculative blow-off top, not a sustainable move_`,
               channel_env: 'DISCORD_CHANNEL_ALERTS',
+              signal_nature: 'confirmatory',
             });
           }
         }
@@ -467,11 +490,156 @@ async function detectSignalAlerts(
             sentinel_score: ss,
             detail: `${cfg.desc}\nSentinel Score: **${ss}**/100`,
             channel_env: cfg.channel,
+            signal_nature: 'confirmatory',
           });
           break;
         }
       } catch {
         // SEC filings are supplemental — skip on API failure
+      }
+    }
+  }
+}
+
+async function detectPredictiveAlerts(
+  scores: Array<Record<string, unknown>>,
+  recentAlerts: Set<string>,
+  alerts: Alert[],
+): Promise<void> {
+  const db = getSupabaseServerClient();
+
+  for (const row of scores) {
+    const sym = row.symbol as string;
+    const stock = row.stocks as unknown as { name: string; sector: string | null; market_cap: number | null };
+    const ss = (row as unknown as SentinelScore).sentinel_score ?? 0;
+
+    const { data: pricesData } = await db
+      .from('daily_prices')
+      .select('date, open, high, low, close, volume')
+      .eq('symbol', sym)
+      .order('date', { ascending: true })
+      .limit(120);
+
+    if (!pricesData || pricesData.length < 60) continue;
+
+    const prices: PriceBar[] = pricesData.map((p) => ({
+      date: p.date as string,
+      open: Number(p.open),
+      high: Number(p.high),
+      low: Number(p.low),
+      close: Number(p.close),
+      volume: Number(p.volume),
+    }));
+
+    const closes = prices.map((b) => b.close);
+
+    // Bollinger Band Squeeze: volatility compressed, big move imminent
+    if (!recentAlerts.has(`${sym}:bb_squeeze`)) {
+      const bb = computeBollingerBands(closes);
+      if (bb?.is_squeeze) {
+        const direction = (row as unknown as SentinelScore).technical_score != null
+          && (row as unknown as SentinelScore).technical_score! >= 55
+          ? 'bullish bias' : 'direction unclear';
+        alerts.push({
+          symbol: sym,
+          name: stock.name,
+          sector: stock.sector,
+          alert_type: 'bb_squeeze',
+          sentinel_score: ss,
+          detail: `Bollinger Band width at **${(bb.width * 100).toFixed(1)}%** — volatility squeeze detected\nBands: $${bb.lower.toFixed(2)} – $${bb.upper.toFixed(2)} (${direction})\n_Volatility contraction predicts expansion — a large move is forming_\n_${today()}_`,
+          channel_env: 'DISCORD_CHANNEL_ALERTS',
+          signal_nature: 'predictive',
+        });
+      }
+    }
+
+    // RSI Divergence: reversal forming before price confirms
+    if (!recentAlerts.has(`${sym}:rsi_divergence`)) {
+      const div = detectRSIDivergence(prices);
+      if (div) {
+        const label = div.type === 'bullish' ? 'Bullish' : 'Bearish';
+        const desc = div.type === 'bullish'
+          ? '_Price made lower low but RSI made higher low — selling pressure weakening, reversal likely forming_'
+          : '_Price made higher high but RSI made lower high — buying momentum fading, top may be forming_';
+        alerts.push({
+          symbol: sym,
+          name: stock.name,
+          sector: stock.sector,
+          alert_type: 'rsi_divergence',
+          sentinel_score: ss,
+          detail: `**${label} RSI Divergence** detected\nPrice: $${div.price_1.toFixed(2)} (${div.price_date_1}) → $${div.price_2.toFixed(2)} (${div.price_date_2})\nRSI: ${div.rsi_1.toFixed(1)} → ${div.rsi_2.toFixed(1)}\n${desc}\n_${today()}_`,
+          channel_env: 'DISCORD_CHANNEL_ALERTS',
+          signal_nature: 'predictive',
+        });
+      }
+    }
+
+    // OBV Accumulation Divergence: volume buying while price flat/declining
+    if (!recentAlerts.has(`${sym}:accumulation_divergence`)) {
+      const obvSlope = computeOBVSlope(prices, 20);
+      if (obvSlope != null && obvSlope > 0.15) {
+        const priceReturn = closes.length >= 20
+          ? (closes[closes.length - 1] - closes[closes.length - 20]) / closes[closes.length - 20]
+          : null;
+        if (priceReturn != null && priceReturn <= 0.02) {
+          alerts.push({
+            symbol: sym,
+            name: stock.name,
+            sector: stock.sector,
+            alert_type: 'accumulation_divergence',
+            sentinel_score: ss,
+            detail: `OBV trending **up** while price flat/declining over 20 days\nPrice: ${(priceReturn * 100).toFixed(1)}% · OBV slope: +${(obvSlope * 100).toFixed(0)}%\n_Volume-confirmed accumulation without price follow-through — breakout setup forming_\n_${today()}_`,
+            channel_env: 'DISCORD_CHANNEL_ALERTS',
+            signal_nature: 'predictive',
+          });
+        }
+      }
+    }
+
+    // Volume Dry-Up: pre-breakout pattern
+    if (!recentAlerts.has(`${sym}:volume_dry_up`)) {
+      const dryUp = detectVolumeDryUp(prices);
+      if (dryUp) {
+        alerts.push({
+          symbol: sym,
+          name: stock.name,
+          sector: stock.sector,
+          alert_type: 'volume_dry_up',
+          sentinel_score: ss,
+          detail: `**${dryUp.consecutive_low_volume_days} consecutive days** of below-average volume (${dryUp.avg_ratio}x avg)\nPrice range: ${dryUp.price_range_pct}% — tight consolidation\n_Volume contraction into a narrow range often precedes a breakout_\n_${today()}_`,
+          channel_env: 'DISCORD_CHANNEL_ALERTS',
+          signal_nature: 'predictive',
+        });
+      }
+    }
+
+    // SMA Convergence: golden/death cross is forming
+    if (!recentAlerts.has(`${sym}:sma_convergence`)) {
+      const { data: techRow } = await db
+        .from('technical_signals')
+        .select('sma_50, sma_200')
+        .eq('symbol', sym)
+        .single();
+
+      if (techRow?.sma_50 != null && techRow?.sma_200 != null) {
+        const sma50 = Number(techRow.sma_50);
+        const sma200 = Number(techRow.sma_200);
+        const gap = Math.abs(sma50 - sma200) / sma200;
+
+        if (gap <= 0.01 && gap > 0) {
+          const crossType = sma50 > sma200 ? 'Golden Cross' : 'Death Cross';
+          const direction = sma50 > sma200 ? 'bullish' : 'bearish';
+          alerts.push({
+            symbol: sym,
+            name: stock.name,
+            sector: stock.sector,
+            alert_type: 'sma_convergence',
+            sentinel_score: ss,
+            detail: `SMA50 ($${sma50.toFixed(2)}) within **${(gap * 100).toFixed(2)}%** of SMA200 ($${sma200.toFixed(2)})\n**${crossType}** is forming — ${direction} trend shift approaching\n_Convergence detected BEFORE the cross — early positioning opportunity_\n_${today()}_`,
+            channel_env: 'DISCORD_CHANNEL_ALERTS',
+            signal_nature: 'predictive',
+          });
+        }
       }
     }
   }

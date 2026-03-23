@@ -4,6 +4,7 @@ import { computeTechnicalScore } from './analyzers/technical';
 import { computeFundamentalScore } from './analyzers/fundamental';
 import { computeInsiderScore, computeInstitutionalScore } from './analyzers/insider';
 import { detectCompositeFlags } from './analyzers/composite-flags';
+import { detectVolumeAnomalies } from './indicators';
 import type {
   TechnicalSignals,
   Fundamentals,
@@ -27,9 +28,13 @@ export function computeCompositeScore(components: {
   institutional: InstitutionalSignals | null;
   news: NewsSentiment | null;
   earningsAiScore?: number;
+  recentVolumeAnomaly?: boolean;
+  estimateRevisionScore?: number;
 }): ComputedSentinelScore {
   const technical_score = components.technical
-    ? computeTechnicalScore(components.technical)
+    ? computeTechnicalScore(components.technical, {
+        recentVolumeAnomaly: components.recentVolumeAnomaly,
+      })
     : 50;
 
   const fundamental_score = components.fundamentals
@@ -44,12 +49,12 @@ export function computeCompositeScore(components: {
     : 50;
 
   const earnings_ai_score = components.earningsAiScore ?? 50;
-  const options_flow_score = 50;
+  const options_flow_score = components.estimateRevisionScore ?? 50;
 
   const w = SCORE_WEIGHTS;
   const totalWeight =
     w.technical + w.fundamental + w.earnings_ai +
-    w.insider + w.institutional + w.news_sentiment + w.options_flow;
+    w.insider + w.institutional + w.news_sentiment + w.estimate_revision;
 
   const weighted =
     technical_score * w.technical +
@@ -58,7 +63,7 @@ export function computeCompositeScore(components: {
     insider_score * w.insider +
     institutional_score * w.institutional +
     news_sentiment_score * w.news_sentiment +
-    options_flow_score * w.options_flow;
+    options_flow_score * w.estimate_revision;
 
   const sentinel_score = clamp(weighted / totalWeight);
 
@@ -120,16 +125,6 @@ export async function computeAndStoreScores(): Promise<{
     const technicals = techRes.data as TechnicalSignals | null;
     const fundamentals = fundRes.data as Fundamentals | null;
 
-    const score = computeCompositeScore({
-      technical: technicals,
-      fundamentals,
-      insider: insiderRes.data as InsiderSignals | null,
-      institutional: instRes.data as InstitutionalSignals | null,
-      news: newsRes.data as NewsSentiment | null,
-      earningsAiScore,
-    });
-
-    const insiderTrades = (tradesRes.data ?? []) as unknown as InsiderTrade[];
     const prices: PriceBar[] = (pricesRes.data ?? [])
       .reverse()
       .map((p: Record<string, unknown>) => ({
@@ -140,6 +135,26 @@ export async function computeAndStoreScores(): Promise<{
         close: Number(p.close),
         volume: Number(p.volume),
       }));
+
+    const recentAnomalies = detectVolumeAnomalies(prices, symbol);
+    const threeDaysAgo = new Date();
+    threeDaysAgo.setDate(threeDaysAgo.getDate() - 3);
+    const recentVolumeAnomaly = recentAnomalies.some(
+      (a) => (a.anomaly_severity === 'high' || a.anomaly_severity === 'extreme')
+        && new Date(a.date) >= threeDaysAgo,
+    );
+
+    const score = computeCompositeScore({
+      technical: technicals,
+      fundamentals,
+      insider: insiderRes.data as InsiderSignals | null,
+      institutional: instRes.data as InstitutionalSignals | null,
+      news: newsRes.data as NewsSentiment | null,
+      earningsAiScore,
+      recentVolumeAnomaly,
+    });
+
+    const insiderTrades = (tradesRes.data ?? []) as unknown as InsiderTrade[];
 
     const composite = detectCompositeFlags({
       technicals,

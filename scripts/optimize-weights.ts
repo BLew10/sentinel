@@ -52,7 +52,7 @@ async function main() {
     { key: 'insider_score', label: 'Insider', currentWeight: SCORE_WEIGHTS.insider },
     { key: 'institutional_score', label: 'Institutional', currentWeight: SCORE_WEIGHTS.institutional },
     { key: 'news_sentiment_score', label: 'News Sentiment', currentWeight: SCORE_WEIGHTS.news_sentiment },
-    { key: 'options_flow_score', label: 'Options Flow', currentWeight: SCORE_WEIGHTS.options_flow },
+    { key: 'options_flow_score', label: 'Estimate Revision', currentWeight: SCORE_WEIGHTS.estimate_revision },
   ] as const;
 
   const results: Array<{

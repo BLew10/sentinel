@@ -112,7 +112,7 @@ export default function GuidePage() {
             <Card>
               <p className="text-text-tertiary text-[10px] uppercase tracking-wider mb-1">Data refreshed</p>
               <p className="font-display font-bold text-lg">Daily at 6 AM ET</p>
-              <p className="text-text-tertiary text-xs mt-1">Prices, fundamentals, insider trades, and options flow are pulled before market open</p>
+              <p className="text-text-tertiary text-xs mt-1">Prices, fundamentals, insider trades, and estimate revisions are pulled before market open</p>
             </Card>
             <Card>
               <p className="text-text-tertiary text-[10px] uppercase tracking-wider mb-1">Scores computed</p>
@@ -139,13 +139,13 @@ export default function GuidePage() {
             <div className="space-y-3">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
                 {[
-                  { name: 'Technical', weight: '28%', desc: 'RSI, MACD, moving averages, Bollinger Bands, trend strength' },
-                  { name: 'AI Analysis', weight: '22%', desc: 'Claude AI evaluates earnings transcripts and cross-references all signals' },
-                  { name: 'Fundamental', weight: '15%', desc: 'Valuation (PE, PS), growth rates, margins, debt, cash flow' },
+                  { name: 'Technical', weight: '22%', desc: 'RSI, MACD, moving averages, Bollinger Bands, trend strength, predictive divergences' },
+                  { name: 'Estimate Revision', weight: '20%', desc: 'Analyst EPS/revenue estimate revisions, forward PE, earnings surprise streaks' },
+                  { name: 'AI Analysis', weight: '18%', desc: 'Claude AI evaluates the full data profile with forward-looking catalyst assessment' },
                   { name: 'Insider', weight: '15%', desc: 'Insider buying/selling patterns, cluster buys, CEO purchases' },
-                  { name: 'Institutional', weight: '10%', desc: 'Institutional ownership changes and 13F filing patterns' },
-                  { name: 'Sentiment', weight: '5%', desc: 'Market sentiment and analyst consensus signals' },
-                  { name: 'Options Flow', weight: '5%', desc: 'Unusual volume, call/put ratios, sweep orders, whale trades' },
+                  { name: 'Fundamental', weight: '12%', desc: 'Valuation (PE, PS), growth rates, margins, debt, cash flow' },
+                  { name: 'Institutional', weight: '8%', desc: 'Institutional ownership changes and 13F filing patterns' },
+                  { name: 'Sentiment', weight: '5%', desc: 'News sentiment and market commentary signals' },
                 ].map((dim) => (
                   <div key={dim.name} className="flex items-start gap-3">
                     <span className="font-display font-bold text-green text-sm w-10 text-right shrink-0">{dim.weight}</span>

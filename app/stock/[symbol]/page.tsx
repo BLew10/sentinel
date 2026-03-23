@@ -1,11 +1,12 @@
 import { notFound } from 'next/navigation';
 import { getSupabaseServerClient } from '@/lib/db';
 import { getSECFilings } from '@/lib/financial-datasets';
-import { detectTechnicalFlags } from '@/lib/analyzers/technical';
+import { detectTechnicalFlags, computePredictiveTechnicals } from '@/lib/analyzers/technical';
 import { detectFundamentalFlags } from '@/lib/analyzers/fundamental';
 import { detectInsiderFlags } from '@/lib/analyzers/insider';
 import { detectAllSignals } from '@/lib/analyzers/signals';
-import type { TechnicalSignals, Fundamentals, ChartEvent, ChartEventCategory, InsiderTrade, FDSECFiling, EarningsAnalysis, ValueReversalResult } from '@/lib/utils/types';
+import { classifySetups } from '@/lib/setups';
+import type { TechnicalSignals, Fundamentals, ChartEvent, ChartEventCategory, InsiderTrade, FDSECFiling, EarningsAnalysis, ValueReversalResult, PriceBar } from '@/lib/utils/types';
 import { StockDetail } from './StockDetail';
 
 export const dynamic = 'force-dynamic';
@@ -24,7 +25,7 @@ export default async function StockPage({ params }: Props) {
   const sym = symbol.toUpperCase();
   const db = getSupabaseServerClient();
 
-  const [stockRes, pricesRes, fundRes, techRes, scoresRes, insiderRes, earningsRes] = await Promise.all([
+  const [stockRes, pricesRes, fundRes, techRes, scoresRes, insiderRes, earningsRes, latestAiRes] = await Promise.all([
     db.from('stocks').select('*').eq('symbol', sym).single(),
     db.from('daily_prices').select('date, open, high, low, close, volume').eq('symbol', sym).order('date', { ascending: true }),
     db.from('fundamentals').select('*').eq('symbol', sym).single(),
@@ -32,12 +33,18 @@ export default async function StockPage({ params }: Props) {
     db.from('sentinel_scores').select('*').eq('symbol', sym).single(),
     db.from('insider_trades').select('*').eq('symbol', sym).order('transaction_date', { ascending: false }).limit(20),
     db.from('earnings_analysis').select('fiscal_quarter, transcript_date').eq('symbol', sym).order('transcript_date', { ascending: false }).limit(20),
+    db.from('earnings_analysis')
+      .select('conviction_score, one_line_summary, key_positives, key_concerns, forward_catalysts, management_tone, analyzed_at')
+      .eq('symbol', sym)
+      .order('analyzed_at', { ascending: false })
+      .limit(1)
+      .single(),
   ]);
 
   if (!stockRes.data) notFound();
 
   const stock = stockRes.data;
-  const prices = (pricesRes.data ?? []).map((p) => ({
+  const prices: PriceBar[] = (pricesRes.data ?? []).map((p) => ({
     date: p.date as string,
     open: Number(p.open),
     high: Number(p.high),
@@ -56,9 +63,38 @@ export default async function StockPage({ params }: Props) {
   const insiderTrades = (insiderRes.data ?? []) as unknown as InsiderTrade[];
   const earningsRows = (earningsRes.data ?? []) as unknown as Pick<EarningsAnalysis, 'fiscal_quarter' | 'transcript_date'>[];
 
-  const technicalFlags = technicals ? detectTechnicalFlags(technicals) : [];
+  const predictive = prices.length >= 30
+    ? computePredictiveTechnicals(prices, technicals?.rs_rank_3m ?? null, technicals?.rs_rank_3m ?? null)
+    : undefined;
+  const technicalFlags = technicals ? detectTechnicalFlags(technicals, predictive) : [];
   const fundamentalFlags = fundamentals ? detectFundamentalFlags(fundamentals) : [];
   const insiderFlags = detectInsiderFlags(insiderTrades, prices);
+
+  const storedFlags = (scoresRes.data?.flags as string[] | null) ?? [];
+  const allFlags = [...new Set([...storedFlags, ...technicalFlags])];
+
+  const setups = classifySetups({
+    flags: allFlags,
+    sentinelScore: scores?.sentinel_score ?? null,
+    technicalScore: scores?.technical_score ?? null,
+    fundamentalScore: scores?.fundamental_score ?? null,
+    insiderScore: scores?.insider_score ?? null,
+    earningsAiScore: scores?.earnings_ai_score ?? null,
+    rsi14: technicals?.rsi_14 ?? null,
+    priceVsSma50: technicals?.price_vs_sma50 ?? null,
+    pctFrom52wHigh: technicals?.pct_from_52w_high ?? null,
+    volumeRatio50d: technicals?.volume_ratio_50d ?? null,
+  });
+
+  const latestAi = latestAiRes.data as {
+    conviction_score: number | null;
+    one_line_summary: string | null;
+    key_positives: string[] | null;
+    key_concerns: string[] | null;
+    forward_catalysts: string[] | null;
+    management_tone: string | null;
+    analyzed_at: string | null;
+  } | null;
 
   let filings: FDSECFiling[] = [];
   try {
@@ -99,6 +135,9 @@ export default async function StockPage({ params }: Props) {
       latestPrice={latestPrice}
       priceChange={priceChange}
       chartEvents={chartEvents}
+      setups={setups}
+      latestAi={latestAi}
+      allFlags={allFlags}
     />
   );
 }

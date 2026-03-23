@@ -1,28 +1,127 @@
 import { getSupabaseServerClient } from '@/lib/db';
 import { ScoreBadge } from '@/components/ui/ScoreBadge';
-import { SCREENER_PRESETS } from '@/lib/utils/constants';
+import { PREDICTIVE_ALERT_TYPES, SIGNAL_TYPE_LABELS } from '@/lib/utils/constants';
 import { formatCurrency, formatMarketCap, formatPercentRaw, formatRelativeTime, scoreVerdict, verdictColor, generateSignalSummary, detectDivergences } from '@/lib/utils/format';
 import type { Divergence } from '@/lib/utils/format';
 import Link from 'next/link';
 import { RecentActivity } from '@/components/dashboard/RecentActivity';
 import { buildActivityItems } from '@/components/dashboard/activity-utils';
+import { SetupCard } from '@/components/dashboard/SetupCard';
+import { classifySetups } from '@/lib/setups';
 
 export const dynamic = 'force-dynamic';
 
-async function getTopStocks() {
+// ── Data Fetchers ──
+
+async function getActiveSetups() {
   const db = getSupabaseServerClient();
-  const { data } = await db
+  const sevenDaysAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
+
+  const { data: alerts } = await db
+    .from('alert_history')
+    .select('symbol, alert_type, message, created_at')
+    .in('alert_type', [...PREDICTIVE_ALERT_TYPES])
+    .gte('created_at', sevenDaysAgo)
+    .order('created_at', { ascending: false });
+
+  if (!alerts || alerts.length === 0) return [];
+
+  const symbolAlerts = new Map<string, string[]>();
+  for (const a of alerts) {
+    const sym = a.symbol as string;
+    const types = symbolAlerts.get(sym) ?? [];
+    if (!types.includes(a.alert_type as string)) types.push(a.alert_type as string);
+    symbolAlerts.set(sym, types);
+  }
+
+  const symbols = [...symbolAlerts.keys()].slice(0, 20);
+
+  const { data: scoreData } = await db
     .from('sentinel_scores')
-    .select('symbol, sentinel_score, technical_score, fundamental_score, earnings_ai_score, insider_score, institutional_score, score_change_1d, rank, stocks!inner(name, sector, market_cap)')
-    .not('sentinel_score', 'is', null)
-    .order('sentinel_score', { ascending: false })
-    .limit(10);
-  return data ?? [];
+    .select(`
+      symbol, sentinel_score, technical_score, fundamental_score,
+      earnings_ai_score, insider_score, institutional_score, flags,
+      stocks!inner(name, sector, market_cap),
+      technical_signals(rsi_14, price_vs_sma50, pct_from_52w_high, volume_ratio_50d)
+    `)
+    .in('symbol', symbols);
+
+  if (!scoreData) return [];
+
+  return scoreData
+    .map((row) => {
+      const stock = row.stocks as unknown as { name: string; sector: string | null; market_cap: number | null };
+      const tech = row.technical_signals as unknown as {
+        rsi_14: number | null; price_vs_sma50: number | null;
+        pct_from_52w_high: number | null; volume_ratio_50d: number | null;
+      } | null;
+      const flags = (row.flags as string[] | null) ?? [];
+      const alertTypes = symbolAlerts.get(row.symbol as string) ?? [];
+
+      const setups = classifySetups({
+        flags,
+        alertTypes,
+        sentinelScore: row.sentinel_score,
+        technicalScore: row.technical_score,
+        fundamentalScore: row.fundamental_score,
+        insiderScore: row.insider_score,
+        earningsAiScore: row.earnings_ai_score,
+        rsi14: tech?.rsi_14 ?? null,
+        priceVsSma50: tech?.price_vs_sma50 ?? null,
+        pctFrom52wHigh: tech?.pct_from_52w_high ?? null,
+        volumeRatio50d: tech?.volume_ratio_50d ?? null,
+      });
+
+      return {
+        symbol: row.symbol as string,
+        name: stock.name,
+        sector: stock.sector,
+        sentinelScore: row.sentinel_score as number | null,
+        setups,
+        alertTypes,
+      };
+    })
+    .filter((r) => r.setups.length > 0)
+    .sort((a, b) => {
+      const aMax = Math.max(...a.setups.map((s) => s.conviction));
+      const bMax = Math.max(...b.setups.map((s) => s.conviction));
+      if (bMax !== aMax) return bMax - aMax;
+      return b.setups.length - a.setups.length;
+    })
+    .slice(0, 5);
+}
+
+async function getSetupCounts() {
+  const db = getSupabaseServerClient();
+  const sevenDaysAgo = new Date(Date.now() - 7 * 86_400_000).toISOString();
+
+  const { data } = await db
+    .from('alert_history')
+    .select('alert_type, symbol')
+    .in('alert_type', [...PREDICTIVE_ALERT_TYPES])
+    .gte('created_at', sevenDaysAgo);
+
+  if (!data) return [];
+
+  const counts = new Map<string, Set<string>>();
+  for (const row of data) {
+    const at = row.alert_type as string;
+    const set = counts.get(at) ?? new Set<string>();
+    set.add(row.symbol as string);
+    counts.set(at, set);
+  }
+
+  return [...counts.entries()]
+    .map(([alertType, symbols]) => ({
+      alertType,
+      label: SIGNAL_TYPE_LABELS[alertType] ?? alertType,
+      count: symbols.size,
+    }))
+    .sort((a, b) => b.count - a.count);
 }
 
 async function getActionableStocks() {
   const db = getSupabaseServerClient();
-
   const { data } = await db
     .from('sentinel_scores')
     .select(`
@@ -34,15 +133,12 @@ async function getActionableStocks() {
     .gte('sentinel_score', 70)
     .not('sentinel_score', 'is', null)
     .order('sentinel_score', { ascending: false })
-    .limit(8);
-
+    .limit(6);
   return data ?? [];
 }
 
 async function getDivergenceStocks() {
   const db = getSupabaseServerClient();
-
-  // Fetch stocks with high insider/fundamental/AI scores (regardless of technical strength)
   const { data } = await db
     .from('sentinel_scores')
     .select(`
@@ -90,34 +186,14 @@ async function getDivergenceStocks() {
     })
     .filter((r) => r._divergences.length > 0);
 
-  // Sort by number of divergences (more = more interesting), then by strength
   withDivergences.sort((a, b) => {
-    const aHigh = a._divergences.filter(d => d.strength === 'high').length;
-    const bHigh = b._divergences.filter(d => d.strength === 'high').length;
+    const aHigh = a._divergences.filter((d) => d.strength === 'high').length;
+    const bHigh = b._divergences.filter((d) => d.strength === 'high').length;
     if (bHigh !== aHigh) return bHigh - aHigh;
     return b._divergences.length - a._divergences.length;
   });
 
   return withDivergences.slice(0, 6);
-}
-
-async function getMovers() {
-  const db = getSupabaseServerClient();
-  const { data } = await db
-    .from('sentinel_scores')
-    .select('symbol, sentinel_score, score_change_1d, stocks!inner(name)')
-    .not('score_change_1d', 'is', null)
-    .order('score_change_1d', { ascending: false })
-    .limit(5);
-
-  const { data: losers } = await db
-    .from('sentinel_scores')
-    .select('symbol, sentinel_score, score_change_1d, stocks!inner(name)')
-    .not('score_change_1d', 'is', null)
-    .order('score_change_1d', { ascending: true })
-    .limit(5);
-
-  return { gainers: data ?? [], losers: losers ?? [] };
 }
 
 async function getRecentAlerts() {
@@ -126,7 +202,7 @@ async function getRecentAlerts() {
     .from('alert_history')
     .select('symbol, alert_type, message, sentinel_score, created_at')
     .order('created_at', { ascending: false })
-    .limit(6);
+    .limit(9);
   return data ?? [];
 }
 
@@ -140,7 +216,6 @@ async function getBestSignal() {
     .order('avg_alpha', { ascending: false })
     .limit(1)
     .single();
-
   return data;
 }
 
@@ -170,7 +245,6 @@ async function getScoreAccuracy() {
 
 async function getRecentActivity() {
   const db = getSupabaseServerClient();
-
   const thirtyDaysAgo = new Date(Date.now() - 30 * 86_400_000).toISOString().split('T')[0];
 
   const [insiderRes, filingRes, instRes] = await Promise.all([
@@ -237,10 +311,15 @@ async function getStats() {
   };
 }
 
+// ── Dashboard ──
+
 export default async function Dashboard() {
-  const [topStocks, actionable, divergenceStocks, movers, stats, recentAlerts, bestSignal, scoreAccuracy, activityItems] = await Promise.all([
-    getTopStocks(), getActionableStocks(), getDivergenceStocks(), getMovers(), getStats(), getRecentAlerts(), getBestSignal(), getScoreAccuracy(), getRecentActivity(),
+  const [activeSetups, setupCounts, actionable, divergenceStocks, stats, recentAlerts, bestSignal, scoreAccuracy, activityItems] = await Promise.all([
+    getActiveSetups(), getSetupCounts(), getActionableStocks(), getDivergenceStocks(), getStats(), getRecentAlerts(), getBestSignal(), getScoreAccuracy(), getRecentActivity(),
   ]);
+
+  const predictiveAlerts = recentAlerts.filter((a) => PREDICTIVE_ALERT_TYPES.has(a.alert_type as string));
+  const confirmatoryAlerts = recentAlerts.filter((a) => !PREDICTIVE_ALERT_TYPES.has(a.alert_type as string));
 
   return (
     <div className="max-w-7xl mx-auto space-y-8">
@@ -258,7 +337,7 @@ export default async function Dashboard() {
         <StatCard
           label="High Conviction"
           value={stats.highConviction.toLocaleString()}
-          sub="Score ≥ 75 → Bullish or better"
+          sub="Score >= 75"
           accent
         />
         <StatCard
@@ -269,73 +348,52 @@ export default async function Dashboard() {
         />
       </div>
 
-      {/* Signal of the Day + Score Accuracy */}
+      {/* Signal Performance + Score Accuracy */}
       {(bestSignal || scoreAccuracy.highBucket) && (
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
           {bestSignal && (
-            <Link
-              href="/signals"
-              className="bg-bg-secondary rounded-lg border border-border p-5 hover:border-green/30 transition-colors"
-            >
+            <Link href="/signals" className="bg-bg-secondary rounded-lg border border-border p-5 hover:border-green/30 transition-colors">
               <p className="text-text-tertiary text-[10px] uppercase tracking-wider mb-2">Best Performing Signal (30d)</p>
               <div className="flex items-center gap-2 mb-2">
-                <span className="text-green text-lg">⚡</span>
                 <h3 className="font-display font-bold text-lg">
-                  {({
-                    golden_cross: 'Golden Cross',
-                    death_cross: 'Death Cross',
-                    stage2_breakout: 'Stage 2 Breakout',
-                    rsi_oversold_bounce: 'RSI Oversold Bounce',
-                    volume_breakout: 'Volume Breakout',
-                    macd_bullish_cross: 'MACD Bullish Cross',
-                    insider_cluster_buy: 'Insider Cluster Buy',
-                    insider_ceo_buy: 'CEO Buy',
-                    score_threshold: 'Score Spike',
-                    triple_confirmation: 'Triple Confirmation',
-                  } as Record<string, string>)[bestSignal.signal_type as string] ?? bestSignal.signal_type}
+                  {SIGNAL_TYPE_LABELS[bestSignal.signal_type as string] ?? bestSignal.signal_type}
                 </h3>
               </div>
               <div className="flex items-center gap-4 text-sm">
-                <span className="text-text-secondary cursor-help" title="Average raw 30-day return after this signal fired">
-                  Avg return: <span className={Number(bestSignal.avg_return) > 0 ? 'text-green font-display' : 'text-red font-display'}>{formatPercentRaw(Number(bestSignal.avg_return) * 100)}</span>
+                <span className="text-text-secondary">
+                  Return: <span className={Number(bestSignal.avg_return) > 0 ? 'text-green font-display' : 'text-red font-display'}>{formatPercentRaw(Number(bestSignal.avg_return) * 100)}</span>
                 </span>
-                <span className="text-text-secondary cursor-help" title="% of signals where the stock went up within 30 days">
-                  Win rate: <span className="text-text-primary font-display">{Number(bestSignal.win_rate).toFixed(0)}%</span>
+                <span className="text-text-secondary">
+                  Win: <span className="text-text-primary font-display">{Number(bestSignal.win_rate).toFixed(0)}%</span>
                 </span>
-                <span className="text-text-secondary cursor-help" title="Average 30-day return vs. SPY — positive means the signal beat the market">
+                <span className="text-text-secondary">
                   Alpha: <span className={Number(bestSignal.avg_alpha) > 0 ? 'text-green font-display' : 'text-red font-display'}>{formatPercentRaw(Number(bestSignal.avg_alpha) * 100)}</span>
                 </span>
               </div>
-              <p className="text-text-tertiary text-[11px] mt-2">Based on {bestSignal.total_signals} historical signals</p>
+              <p className="text-text-tertiary text-[11px] mt-2">Based on {bestSignal.total_signals} signals</p>
             </Link>
           )}
           {scoreAccuracy.highBucket && (
-            <Link
-              href="/signals"
-              className="bg-bg-secondary rounded-lg border border-border p-5 hover:border-green/30 transition-colors"
-            >
+            <Link href="/signals" className="bg-bg-secondary rounded-lg border border-border p-5 hover:border-green/30 transition-colors">
               <p className="text-text-tertiary text-[10px] uppercase tracking-wider mb-2">Score Accuracy (30d)</p>
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-green text-lg">🎯</span>
-                <h3 className="font-display font-bold text-lg">
-                  {Number(scoreAccuracy.highBucket.avg_alpha) > 0 ? 'Scores Predict Returns' : 'Under Review'}
-                </h3>
-              </div>
+              <h3 className="font-display font-bold text-lg mb-2">
+                {Number(scoreAccuracy.highBucket.avg_alpha) > 0 ? 'Scores Predict Returns' : 'Under Review'}
+              </h3>
               <div className="grid grid-cols-2 gap-3 text-sm">
                 <div>
-                  <p className="text-text-tertiary text-[10px]">Score 75-100 (30d)</p>
+                  <p className="text-text-tertiary text-[10px]">Score 75-100</p>
                   <p className={`font-display ${Number(scoreAccuracy.highBucket.avg_return) > 0 ? 'text-green' : 'text-red'}`}>
                     {formatPercentRaw(Number(scoreAccuracy.highBucket.avg_return) * 100)} avg
                   </p>
-                  <p className="text-text-tertiary text-[10px] cursor-help" title="% of stocks in this bucket with a positive 30-day return">Win rate: {Number(scoreAccuracy.highBucket.win_rate).toFixed(0)}%</p>
+                  <p className="text-text-tertiary text-[10px]">Win rate: {Number(scoreAccuracy.highBucket.win_rate).toFixed(0)}%</p>
                 </div>
                 {scoreAccuracy.lowBucket && (
                   <div>
-                    <p className="text-text-tertiary text-[10px]">Score 0-30 (30d)</p>
+                    <p className="text-text-tertiary text-[10px]">Score 0-30</p>
                     <p className={`font-display ${Number(scoreAccuracy.lowBucket.avg_return) > 0 ? 'text-green' : 'text-red'}`}>
                       {formatPercentRaw(Number(scoreAccuracy.lowBucket.avg_return) * 100)} avg
                     </p>
-                    <p className="text-text-tertiary text-[10px] cursor-help" title="% of stocks in this bucket with a positive 30-day return">Win rate: {Number(scoreAccuracy.lowBucket.win_rate).toFixed(0)}%</p>
+                    <p className="text-text-tertiary text-[10px]">Win rate: {Number(scoreAccuracy.lowBucket.win_rate).toFixed(0)}%</p>
                   </div>
                 )}
               </div>
@@ -344,17 +402,76 @@ export default async function Dashboard() {
         </div>
       )}
 
-      {/* Early Signals — divergences are the real edge */}
+      {/* ── TODAY'S BEST SETUPS (Hero) ── */}
+      <div>
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-display font-semibold">Today&apos;s Best Setups</h2>
+              <span className="text-[10px] px-2 py-0.5 rounded border border-purple/30 bg-purple-bg text-purple font-medium">Predictive</span>
+            </div>
+            <p className="text-text-tertiary text-xs mt-0.5">
+              Stocks with converging predictive signals — these setups are forming BEFORE the move
+            </p>
+          </div>
+          <Link href="/screener?preset=volatility_squeeze" className="text-sm text-purple hover:text-purple/80 transition-colors">
+            All setups →
+          </Link>
+        </div>
+        {activeSetups.length > 0 ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {activeSetups.map((stock) => (
+              <SetupCard
+                key={stock.symbol}
+                symbol={stock.symbol}
+                name={stock.name}
+                sentinelScore={stock.sentinelScore}
+                setup={stock.setups[0]}
+                sector={stock.sector}
+              />
+            ))}
+          </div>
+        ) : (
+          <div className="bg-bg-secondary rounded-lg border border-border p-8 text-center">
+            <p className="text-text-tertiary text-sm">No active setups detected today.</p>
+            <p className="text-text-tertiary text-xs mt-1">
+              Check the <Link href="/screener" className="text-purple hover:text-purple/80 underline">screener</Link> for emerging patterns.
+            </p>
+          </div>
+        )}
+      </div>
+
+      {/* ── SETUPS FORMING NOW ── */}
+      {setupCounts.length > 0 && (
+        <div>
+          <h2 className="text-sm font-medium text-text-secondary mb-1">Setups Forming Now</h2>
+          <p className="text-text-tertiary text-[11px] mb-3">Active predictive signals across the universe (last 7 days)</p>
+          <div className="flex flex-wrap gap-2">
+            {setupCounts.map(({ alertType, label, count }) => (
+              <Link
+                key={alertType}
+                href={`/screener?preset=${alertType === 'bb_squeeze' ? 'volatility_squeeze' : alertType === 'rsi_divergence' ? 'rsi_divergence_plays' : alertType === 'accumulation_divergence' || alertType === 'volume_dry_up' ? 'accumulation_before_breakout' : alertType === 'pre_earnings_setup' ? 'pre_earnings_setup' : 'sentinel_top_picks'}`}
+                className="flex items-center gap-2 px-3 py-2 rounded-lg border border-purple/20 bg-bg-secondary hover:border-purple/40 transition-colors"
+              >
+                <span className="text-purple font-display font-bold text-sm">{count}</span>
+                <span className="text-text-secondary text-xs">{label}</span>
+              </Link>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* ── DIVERGENCES ── */}
       {divergenceStocks.length > 0 && (
         <div>
           <div className="flex items-center justify-between mb-4">
             <div>
               <div className="flex items-center gap-2">
-                <h2 className="text-lg font-display font-semibold">Early Signals</h2>
+                <h2 className="text-lg font-display font-semibold">Divergences</h2>
                 <span className="text-[10px] px-2 py-0.5 rounded border border-purple/30 bg-purple-bg text-purple font-medium">Edge</span>
               </div>
               <p className="text-text-tertiary text-xs mt-0.5">
-                Non-price indicators disagree with the chart — insiders, fundamentals, or AI see something price hasn&apos;t reflected yet
+                Non-price indicators disagree with the chart — insiders, fundamentals, or AI see something price hasn&apos;t reflected
               </p>
             </div>
             <Link href="/screener?preset=insider_contrarian" className="text-sm text-purple hover:text-purple/80 transition-colors">
@@ -407,19 +524,22 @@ export default async function Dashboard() {
         </div>
       )}
 
-      {/* Actionable Ideas */}
+      {/* ── CONFIRMATORY: ACTIONABLE IDEAS ── */}
       {actionable.length > 0 && (
         <div>
           <div className="flex items-center justify-between mb-4">
             <div>
-              <h2 className="text-lg font-display font-semibold">Actionable Ideas</h2>
-              <p className="text-text-tertiary text-xs mt-0.5">Stocks with multiple bullish signals aligning — here&apos;s why they stand out</p>
+              <div className="flex items-center gap-2">
+                <h2 className="text-lg font-display font-semibold">Already Moving</h2>
+                <span className="text-[10px] px-2 py-0.5 rounded border border-green/30 bg-green-bg text-green font-medium">Confirmatory</span>
+              </div>
+              <p className="text-text-tertiary text-xs mt-0.5">High-score stocks with multiple bullish signals aligned — moves already underway</p>
             </div>
             <Link href="/screener?preset=sentinel_top_picks" className="text-sm text-green hover:text-green/80 transition-colors">
               View all →
             </Link>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
             {actionable.map((row) => {
               const stock = row.stocks as unknown as { name: string; sector: string | null; market_cap: number | null };
               const tech = row.technical_signals as unknown as { rsi_14: number | null; price_vs_sma50: number | null; price_vs_sma200: number | null; pct_from_52w_high: number | null; volume_ratio_50d: number | null } | null;
@@ -479,156 +599,80 @@ export default async function Dashboard() {
         </div>
       )}
 
-      {/* Quick Screens */}
+      {/* ── STRATEGY PATHS ── */}
       <div>
-        <h2 className="text-sm font-medium text-text-secondary mb-1">Quick Screens</h2>
-        <p className="text-text-tertiary text-[11px] mb-3">Pre-built filters for common trading strategies</p>
-        <div className="flex flex-wrap gap-2">
-          {Object.entries(SCREENER_PRESETS).map(([key, preset]) => (
-            <Link
-              key={key}
-              href={`/screener?preset=${key}`}
-              className="group px-3 py-2 text-xs rounded-lg border border-border text-text-tertiary hover:text-text-secondary hover:border-border/80 transition-colors"
-            >
-              <span className="font-medium">{preset.name}</span>
-              <span className="block text-[10px] text-text-tertiary/60 mt-0.5 group-hover:text-text-tertiary/80">{preset.description}</span>
-            </Link>
-          ))}
+        <h2 className="text-sm font-medium text-text-secondary mb-1">Find Your Edge</h2>
+        <p className="text-text-tertiary text-[11px] mb-3">Screener strategies organized by approach</p>
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+          <StrategyPath
+            href="/screener?preset=volatility_squeeze"
+            title="Find Setups"
+            description="Volatility squeezes, divergences, and pre-breakout patterns forming now"
+            accent="purple"
+          />
+          <StrategyPath
+            href="/screener?preset=insider_contrarian"
+            title="Insider Edge"
+            description="Follow insider buying into weak prices — the highest-conviction contrarian signal"
+            accent="green"
+          />
+          <StrategyPath
+            href="/screener?preset=value_reversal_candidates"
+            title="Value Plays"
+            description="Deeply oversold quality companies with fresh insider conviction buying"
+            accent="cyan"
+          />
+          <StrategyPath
+            href="/screener?preset=minervini_trend_template"
+            title="Momentum"
+            description="Stage 2 uptrends with improving relative strength — buy pullbacks"
+            accent="amber"
+          />
         </div>
       </div>
 
-      {/* Top 10 Card Grid */}
-      <div>
-        <div className="flex items-center justify-between mb-4">
-          <h2 className="text-lg font-display font-semibold">Top 10 by Score</h2>
-          <Link href="/screener" className="text-sm text-green hover:text-green/80 transition-colors">
-            View all →
-          </Link>
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-          {topStocks.map((row, i) => {
-            const stock = row.stocks as unknown as { name: string; sector: string | null; market_cap: number | null };
-            const verdict = scoreVerdict(row.sentinel_score);
-            return (
-              <Link
-                key={row.symbol}
-                href={`/stock/${row.symbol}`}
-                className="bg-bg-secondary rounded-lg border border-border p-4 hover:border-green/30 transition-colors group"
-              >
-                <div className="flex items-start justify-between">
-                  <div>
-                    <span className="text-text-tertiary text-[10px] font-display">#{i + 1}</span>
-                    <h3 className="font-display font-bold text-green group-hover:text-green/80 transition-colors">{row.symbol}</h3>
-                    <p className="text-text-tertiary text-[11px] truncate max-w-[120px]">{stock.name}</p>
-                  </div>
-                  <ScoreBadge score={row.sentinel_score} size="md" />
-                </div>
-                <div className="mt-2">
-                  <span className={`text-[10px] font-medium ${verdictColor(verdict)}`}>{verdict}</span>
-                </div>
-                <div className="flex items-center gap-3 mt-1 text-[10px]">
-                  <span className="text-text-tertiary" title="Technical score">T <span className="text-text-secondary">{row.technical_score ?? '—'}</span></span>
-                  <span className="text-text-tertiary" title="Fundamental score">F <span className="text-text-secondary">{row.fundamental_score ?? '—'}</span></span>
-                  {row.score_change_1d != null && row.score_change_1d !== 0 && (
-                    <span className={row.score_change_1d >= 0 ? 'text-green' : 'text-red'}>
-                      {row.score_change_1d > 0 ? '+' : ''}{row.score_change_1d}
-                    </span>
-                  )}
-                </div>
-                <div className="mt-2 text-[10px] text-text-tertiary">
-                  {stock.sector ?? '—'} · {stock.market_cap ? formatMarketCap(stock.market_cap) : '—'}
-                </div>
-              </Link>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Score Movers */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-        <MoverSection title="Biggest Score Gainers (1d)" subtitle="Stocks with rapidly improving signals" items={movers.gainers} direction="up" />
-        <MoverSection title="Biggest Score Drops (1d)" subtitle="Previously strong stocks losing momentum" items={movers.losers} direction="down" />
-      </div>
-
-      {/* Recent Alerts */}
+      {/* ── RECENT ALERTS (split predictive / confirmatory) ── */}
       {recentAlerts.length > 0 && (
         <div>
           <div className="flex items-center justify-between mb-3">
             <div>
               <h2 className="text-sm font-medium text-text-secondary">Recent Alerts</h2>
-              <p className="text-text-tertiary text-[11px]">Latest automated signal detections</p>
+              <p className="text-text-tertiary text-[11px]">Latest signal detections — predictive signals fire BEFORE the move</p>
             </div>
             <Link href="/signals" className="text-xs text-green hover:text-green/80 transition-colors">
               Signal performance →
             </Link>
           </div>
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
-            {recentAlerts.map((alert, i) => {
-              const typeLabels: Record<string, { label: string; icon: string }> = {
-                score_threshold: { label: 'Score Spike', icon: '⬆️' },
-                score_drop: { label: 'Score Drop', icon: '⬇️' },
-                insider_cluster_buy: { label: 'Insider Cluster', icon: '🏦' },
-                insider_ceo_buy: { label: 'CEO Buy', icon: '👔' },
-                triple_confirmation: { label: 'Triple Confirm', icon: '✅' },
-              };
-              const info = typeLabels[alert.alert_type as string] ?? { label: alert.alert_type, icon: '🔔' };
-              return (
-                <Link
-                  key={`${alert.symbol}-${i}`}
-                  href={`/stock/${alert.symbol}`}
-                  className="bg-bg-secondary rounded-lg border border-border px-3 py-2.5 hover:border-green/30 transition-colors"
-                >
-                  <div className="flex items-center justify-between mb-1">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-sm">{info.icon}</span>
-                      <span className="font-display font-semibold text-green text-sm">{alert.symbol}</span>
-                      <span className="text-[10px] text-text-tertiary">{info.label}</span>
-                    </div>
-                    <span className="text-[10px] text-text-tertiary">{formatRelativeTime(alert.created_at as string)}</span>
-                  </div>
-                  <p className="text-text-secondary text-[11px] leading-snug truncate">{alert.message}</p>
-                </Link>
-              );
-            })}
-          </div>
+          {predictiveAlerts.length > 0 && (
+            <div className="mb-3">
+              <p className="text-[10px] text-purple font-medium uppercase tracking-wider mb-2">Predictive (setup forming)</p>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+                {predictiveAlerts.slice(0, 6).map((alert, i) => (
+                  <AlertCard key={`p-${alert.symbol}-${i}`} alert={alert} isPredictive />
+                ))}
+              </div>
+            </div>
+          )}
+          {confirmatoryAlerts.length > 0 && (
+            <div>
+              <p className="text-[10px] text-text-tertiary font-medium uppercase tracking-wider mb-2">Confirmatory (move detected)</p>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+                {confirmatoryAlerts.slice(0, 6).map((alert, i) => (
+                  <AlertCard key={`c-${alert.symbol}-${i}`} alert={alert} isPredictive={false} />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
       )}
 
       {/* Recent Activity Feed */}
       <RecentActivity items={activityItems} />
-
-      {/* Legend */}
-      <div className="border-t border-border pt-6">
-        <h3 className="text-xs font-medium text-text-tertiary mb-3 uppercase tracking-wider">How Scores Work</h3>
-        <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-[11px]">
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-green shrink-0" />
-            <span className="text-text-secondary"><span className="text-text-primary font-medium">75-100</span> — Strong Buy / Bullish</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-green/60 shrink-0" />
-            <span className="text-text-secondary"><span className="text-text-primary font-medium">65-74</span> — Bullish</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-amber shrink-0" />
-            <span className="text-text-secondary"><span className="text-text-primary font-medium">45-64</span> — Neutral</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-amber/60 shrink-0" />
-            <span className="text-text-secondary"><span className="text-text-primary font-medium">30-44</span> — Caution</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <span className="w-2 h-2 rounded-full bg-red shrink-0" />
-            <span className="text-text-secondary"><span className="text-text-primary font-medium">0-29</span> — Bearish</span>
-          </div>
-        </div>
-        <p className="text-text-tertiary text-[10px] mt-2">
-          Scores combine 7 dimensions: Technical (28%), AI Analysis (22%), Fundamental (15%), Insider (15%), Institutional (10%), Sentiment (5%), Options Flow (5%)
-        </p>
-      </div>
     </div>
   );
 }
+
+// ── Helper Components ──
 
 function StatCard({ label, value, sub, subColor, accent }: {
   label: string; value: string; sub?: string; subColor?: string; accent?: boolean;
@@ -642,53 +686,43 @@ function StatCard({ label, value, sub, subColor, accent }: {
   );
 }
 
-function MoverSection({ title, subtitle, items, direction }: {
-  title: string;
-  subtitle: string;
-  items: Array<{ symbol: string; sentinel_score: number | null; score_change_1d: number | null; stocks: unknown }>;
-  direction: 'up' | 'down';
+function StrategyPath({ href, title, description, accent }: {
+  href: string; title: string; description: string; accent: string;
 }) {
-  if (items.length === 0) {
-    return (
-      <div>
-        <h3 className="text-sm font-medium text-text-secondary mb-1">{title}</h3>
-        <p className="text-text-tertiary text-xs">{subtitle}</p>
-        <p className="text-text-tertiary text-xs mt-3">No score changes recorded yet</p>
-      </div>
-    );
-  }
+  const borderColor = accent === 'purple' ? 'hover:border-purple/40' : accent === 'green' ? 'hover:border-green/40' : accent === 'cyan' ? 'hover:border-cyan/40' : 'hover:border-amber/40';
+  const textColor = accent === 'purple' ? 'text-purple' : accent === 'green' ? 'text-green' : accent === 'cyan' ? 'text-cyan' : 'text-amber';
 
   return (
-    <div>
-      <h3 className="text-sm font-medium text-text-secondary mb-0.5">{title}</h3>
-      <p className="text-text-tertiary text-[11px] mb-3">{subtitle}</p>
-      <div className="space-y-2">
-        {items.map((item) => {
-          const stock = item.stocks as unknown as { name: string };
-          const verdict = scoreVerdict(item.sentinel_score);
-          return (
-            <Link
-              key={item.symbol}
-              href={`/stock/${item.symbol}`}
-              className="flex items-center justify-between bg-bg-secondary rounded-lg border border-border px-4 py-3 hover:border-green/30 transition-colors"
-            >
-              <div className="flex items-center gap-3">
-                <span className="font-display font-semibold text-green text-sm">{item.symbol}</span>
-                <span className="text-text-tertiary text-xs truncate max-w-32">{stock.name}</span>
-                <span className={`text-[10px] font-medium ${verdictColor(verdict)}`}>{verdict}</span>
-              </div>
-              <div className="flex items-center gap-3">
-                <ScoreBadge score={item.sentinel_score} size="sm" />
-                {item.score_change_1d != null && (
-                  <span className={`font-display text-xs font-bold ${direction === 'up' ? 'text-green' : 'text-red'}`}>
-                    {item.score_change_1d > 0 ? '+' : ''}{item.score_change_1d}
-                  </span>
-                )}
-              </div>
-            </Link>
-          );
-        })}
+    <Link
+      href={href}
+      className={`bg-bg-secondary rounded-lg border border-border p-4 ${borderColor} transition-colors group`}
+    >
+      <h3 className={`font-display font-bold text-sm ${textColor} mb-1`}>{title}</h3>
+      <p className="text-text-tertiary text-[11px] leading-relaxed">{description}</p>
+    </Link>
+  );
+}
+
+function AlertCard({ alert, isPredictive }: {
+  alert: { symbol: unknown; alert_type: unknown; message: unknown; sentinel_score: unknown; created_at: unknown };
+  isPredictive: boolean;
+}) {
+  const label = SIGNAL_TYPE_LABELS[alert.alert_type as string] ?? (alert.alert_type as string);
+  const borderClass = isPredictive ? 'border-purple/20 hover:border-purple/40' : 'border-border hover:border-green/30';
+
+  return (
+    <Link
+      href={`/stock/${alert.symbol}`}
+      className={`bg-bg-secondary rounded-lg border ${borderClass} px-3 py-2.5 transition-colors`}
+    >
+      <div className="flex items-center justify-between mb-1">
+        <div className="flex items-center gap-1.5">
+          <span className={`font-display font-semibold text-sm ${isPredictive ? 'text-purple' : 'text-green'}`}>{alert.symbol as string}</span>
+          <span className="text-[10px] text-text-tertiary">{label}</span>
+        </div>
+        <span className="text-[10px] text-text-tertiary">{formatRelativeTime(alert.created_at as string)}</span>
       </div>
-    </div>
+      <p className="text-text-secondary text-[11px] leading-snug truncate">{alert.message as string}</p>
+    </Link>
   );
 }

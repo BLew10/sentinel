@@ -12,6 +12,8 @@ import type {
   FDFinancialMetricsSnapshot,
   FDSECFiling,
   FDNewsArticle,
+  FDAnalystEstimate,
+  FDEarnings,
   ErrorCategory,
 } from './utils/types';
 
@@ -317,4 +319,31 @@ export async function getNews(
   const res = await rateLimitedFetch(`${BASE}/news?${q}`);
   const json = await res.json();
   return json.news ?? [];
+}
+
+// ── Analyst Estimates (forward-looking) ─────────────────────
+
+export async function getAnalystEstimates(
+  ticker: string,
+  opts?: { period?: 'annual' | 'quarterly'; limit?: number },
+): Promise<FDAnalystEstimate[]> {
+  const q = qs({
+    ticker,
+    period: opts?.period ?? 'quarterly',
+    limit: opts?.limit ?? 8,
+  });
+  const res = await rateLimitedFetch(`${BASE}/analyst-estimates?${q}`);
+  const json = await res.json();
+  return json.analyst_estimates ?? [];
+}
+
+// ── Earnings (report dates, surprise, estimates) ────────────
+
+export async function getEarnings(
+  ticker: string,
+): Promise<FDEarnings | null> {
+  const q = qs({ ticker });
+  const res = await rateLimitedFetch(`${BASE}/earnings?${q}`);
+  const json = await res.json();
+  return json.earnings ?? null;
 }

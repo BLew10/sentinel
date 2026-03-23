@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 import { format, subDays } from 'date-fns';
 import { getSupabaseServerClient } from '@/lib/db';
-import { getStockPrices, FDApiError } from '@/lib/financial-datasets';
+import { getStockPrices, getAnalystEstimates, getEarnings, getNews, FDApiError } from '@/lib/financial-datasets';
 import { computeAllIndicators, computePercentileRank } from '@/lib/indicators';
 import { computeAndStoreScores } from '@/lib/scoring';
 import { detectAlerts, recordAlert } from '@/lib/alerts';
@@ -9,6 +9,7 @@ import { snapshotSignal } from '@/lib/signals';
 import { computeAndStoreSectorSignals } from '@/lib/sectors';
 import { detectSmaCrossover } from '@/lib/analyzers/technical';
 import { analyzeStock } from '@/lib/analyzers/sentiment';
+import { computeEstimateRevisionScore } from '@/lib/analyzers/estimates';
 import { isLLMAvailable } from '@/lib/llm';
 import {
   createPipelineRun, startStep, finishStep, logStepError,
@@ -77,6 +78,104 @@ async function step1_fetchPrices(run: ReturnType<typeof createPipelineRun>) {
 
   finishStep(run, 'fetch_prices', errors > 0 ? 'error' : 'success', {
     inserted, errors, stocks: stocks.length,
+  });
+}
+
+async function step1b_fetchForwardData(run: ReturnType<typeof createPipelineRun>) {
+  startStep(run, 'fetch_forward_data');
+
+  const db = getSupabaseServerClient();
+  const { data: stocks } = await db
+    .from('stocks')
+    .select('symbol')
+    .eq('is_active', true)
+    .order('symbol');
+
+  if (!stocks) {
+    finishStep(run, 'fetch_forward_data', 'skipped', { stocks: 0 });
+    return;
+  }
+
+  let estimatesFetched = 0;
+  let earningsFetched = 0;
+  let newsFetched = 0;
+  let errors = 0;
+
+  for (const { symbol } of stocks) {
+    try {
+      const [estimates, earnings, news] = await Promise.all([
+        getAnalystEstimates(symbol, { period: 'quarterly', limit: 4 }).catch(() => []),
+        getEarnings(symbol).catch(() => null),
+        getNews(symbol, { limit: 10 }).catch(() => []),
+      ]);
+
+      if (estimates.length > 0) {
+        // Store latest estimate revision data alongside fundamentals
+        const latestPrice = await db
+          .from('daily_prices')
+          .select('close')
+          .eq('symbol', symbol)
+          .order('date', { ascending: false })
+          .limit(1)
+          .single();
+
+        const currentPrice = latestPrice.data?.close != null ? Number(latestPrice.data.close) : null;
+
+        const revisionResult = computeEstimateRevisionScore({
+          currentEstimates: estimates,
+          priorEstimates: [],
+          earnings,
+          currentPrice,
+        });
+
+        // Update forward_pe in fundamentals if we computed one
+        if (revisionResult.forward_pe != null) {
+          await db
+            .from('fundamentals')
+            .update({ forward_pe: revisionResult.forward_pe })
+            .eq('symbol', symbol);
+        }
+
+        estimatesFetched++;
+      }
+
+      if (earnings) earningsFetched++;
+
+      // Populate news_sentiment table
+      if (news.length > 0) {
+        const recentNews = news.filter((n) => {
+          const daysAgo = (Date.now() - new Date(n.published_at).getTime()) / 86_400_000;
+          return daysAgo <= 7;
+        });
+
+        await db
+          .from('news_sentiment')
+          .upsert({
+            symbol,
+            num_articles_7d: recentNews.length,
+            top_headline: news[0]?.title ?? null,
+            sentiment_score: null,
+            sentiment_label: null,
+            sentiment_velocity: null,
+            ai_summary: null,
+            updated_at: new Date().toISOString(),
+          }, { onConflict: 'symbol' });
+
+        newsFetched++;
+      }
+    } catch (err) {
+      errors++;
+      logStepError(run, 'fetch_forward_data', symbol, err instanceof Error ? err.message : String(err));
+      if (err instanceof FDApiError && err.category === 'circuit_open') break;
+    }
+  }
+
+  finishStep(run, 'fetch_forward_data', errors > 0 ? 'error' : 'success', {
+    estimates: estimatesFetched,
+    earnings: earningsFetched,
+    news: newsFetched,
+    errors,
+    stocks: stocks.length,
   });
 }
 
@@ -273,11 +372,32 @@ async function step3_aiAnalysis(run: ReturnType<typeof createPipelineRun>) {
       const stock = movers!.find((m) => m.symbol === sym);
       const s = stock!.stocks as unknown as { name: string; sector: string | null };
 
-      const [fundRes, techRes, pricesRes] = await Promise.all([
+      const [fundRes, techRes, pricesRes, flagsRes] = await Promise.all([
         db.from('fundamentals').select('*').eq('symbol', sym).single(),
         db.from('technical_signals').select('*').eq('symbol', sym).single(),
         db.from('daily_prices').select('date, close, volume').eq('symbol', sym).order('date', { ascending: false }).limit(30),
+        db.from('sentinel_scores').select('flags').eq('symbol', sym).single(),
       ]);
+
+      // Fetch forward-looking data for the AI prompt
+      const [estimates, earnings] = await Promise.all([
+        getAnalystEstimates(sym, { period: 'quarterly', limit: 4 }).catch(() => []),
+        getEarnings(sym).catch(() => null),
+      ]);
+
+      const currentPrice = pricesRes.data?.[0]?.close != null ? Number(pricesRes.data[0].close) : null;
+      const estimateRevision = computeEstimateRevisionScore({
+        currentEstimates: estimates,
+        priorEstimates: [],
+        earnings,
+        currentPrice,
+      });
+
+      const detectedFlags = (flagsRes.data?.flags as string[]) ?? [];
+      const predictiveSignals = detectedFlags.filter((f) =>
+        ['BB_SQUEEZE', 'RSI_BULLISH_DIVERGENCE', 'RSI_BEARISH_DIVERGENCE',
+         'OBV_ACCUMULATION', 'VOLUME_DRY_UP', 'ATR_SQUEEZE', 'RS_ACCELERATING'].includes(f),
+      );
 
       const result = await analyzeStock({
         symbol: sym,
@@ -290,6 +410,9 @@ async function step3_aiAnalysis(run: ReturnType<typeof createPipelineRun>) {
           close: Number(p.close),
           volume: Number(p.volume),
         })),
+        analystEstimates: estimates,
+        estimateRevision,
+        predictiveSignals,
       });
 
       if (!result) continue;
@@ -365,6 +488,7 @@ export async function GET(request: Request) {
   const run = createPipelineRun('cron');
 
   await step1_fetchPrices(run);
+  await step1b_fetchForwardData(run);
   await step2_computeTechnicals(run);
   await step3_aiAnalysis(run);
   await step4_alerts(run);

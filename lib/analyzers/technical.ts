@@ -1,4 +1,11 @@
-import type { TechnicalSignals } from '../utils/types';
+import type { TechnicalSignals, PriceBar, BollingerBands, RSIDivergence, VolumeDryUp } from '../utils/types';
+import {
+  computeBollingerBands,
+  computeOBVSlope,
+  detectRSIDivergence,
+  detectVolumeDryUp,
+  computeATRPercentile,
+} from '../indicators';
 
 export type TechnicalFlag =
   | 'GOLDEN_CROSS'
@@ -12,7 +19,16 @@ export type TechnicalFlag =
   | 'NEAR_52W_HIGH'
   | 'BREAKING_OUT'
   | 'STAGE2_UPTREND'
-  | 'BELOW_SMA200';
+  | 'BELOW_SMA200'
+  | 'BB_SQUEEZE'
+  | 'RSI_BULLISH_DIVERGENCE'
+  | 'RSI_BEARISH_DIVERGENCE'
+  | 'OBV_ACCUMULATION'
+  | 'OBV_DISTRIBUTION'
+  | 'VOLUME_DRY_UP'
+  | 'ATR_SQUEEZE'
+  | 'RS_ACCELERATING'
+  | 'RS_DECELERATING';
 
 function clamp(value: number, min = 0, max = 100): number {
   return Math.max(min, Math.min(max, Math.round(value)));
@@ -24,9 +40,18 @@ function lerp(value: number, inLow: number, inHigh: number, outLow = 0, outHigh 
   return outLow + t * (outHigh - outLow);
 }
 
+export interface PredictiveTechnicalData {
+  bollinger: BollingerBands | null;
+  rsiDivergence: RSIDivergence | null;
+  obvSlope: number | null;
+  volumeDryUp: VolumeDryUp | null;
+  atrPercentile: number | null;
+  rsRankDelta: number | null;
+}
+
 export function computeTechnicalScore(
   signals: TechnicalSignals,
-  opts?: { recentVolumeAnomaly?: boolean },
+  opts?: { recentVolumeAnomaly?: boolean; predictive?: PredictiveTechnicalData },
 ): number {
   const scores: number[] = [];
 
@@ -68,6 +93,34 @@ export function computeTechnicalScore(
     scores.push(clamp(lerp(signals.pct_from_52w_high, -0.4, 0, 10, 85)));
   }
 
+  // ── Predictive sub-scores (forward-looking) ──
+
+  if (opts?.predictive) {
+    const p = opts.predictive;
+
+    // RSI divergence: bullish divergence = bonus, bearish = penalty
+    if (p.rsiDivergence) {
+      scores.push(p.rsiDivergence.type === 'bullish' ? 75 : 25);
+    }
+
+    // OBV slope: accumulation (positive slope) vs distribution (negative)
+    if (p.obvSlope != null) {
+      scores.push(clamp(lerp(p.obvSlope, -0.3, 0.3, 25, 75)));
+    }
+
+    // ATR squeeze: low percentile = volatility contraction = big move coming
+    // This is directionally neutral but we slightly favor it when trend is bullish
+    if (p.atrPercentile != null && p.atrPercentile <= 15) {
+      const trendBias = signals.price_vs_sma50 != null && signals.price_vs_sma50 > 0 ? 65 : 50;
+      scores.push(trendBias);
+    }
+
+    // RS rank acceleration: improving RS predicts continuation
+    if (p.rsRankDelta != null) {
+      scores.push(clamp(lerp(p.rsRankDelta, -15, 15, 30, 70)));
+    }
+  }
+
   if (scores.length === 0) return 50;
 
   let result = scores.reduce((a, b) => a + b, 0) / scores.length;
@@ -76,7 +129,10 @@ export function computeTechnicalScore(
   return clamp(result);
 }
 
-export function detectTechnicalFlags(signals: TechnicalSignals): TechnicalFlag[] {
+export function detectTechnicalFlags(
+  signals: TechnicalSignals,
+  predictive?: PredictiveTechnicalData,
+): TechnicalFlag[] {
   const flags: TechnicalFlag[] = [];
 
   if (signals.rsi_14 != null) {
@@ -126,7 +182,42 @@ export function detectTechnicalFlags(signals: TechnicalSignals): TechnicalFlag[]
     if (crossRatio < 0 && crossRatio > -0.02) flags.push('DEATH_CROSS');
   }
 
+  // ── Predictive flags ──
+  if (predictive) {
+    if (predictive.bollinger?.is_squeeze) flags.push('BB_SQUEEZE');
+    if (predictive.rsiDivergence?.type === 'bullish') flags.push('RSI_BULLISH_DIVERGENCE');
+    if (predictive.rsiDivergence?.type === 'bearish') flags.push('RSI_BEARISH_DIVERGENCE');
+    if (predictive.obvSlope != null && predictive.obvSlope > 0.15) flags.push('OBV_ACCUMULATION');
+    if (predictive.obvSlope != null && predictive.obvSlope < -0.15) flags.push('OBV_DISTRIBUTION');
+    if (predictive.volumeDryUp) flags.push('VOLUME_DRY_UP');
+    if (predictive.atrPercentile != null && predictive.atrPercentile <= 10) flags.push('ATR_SQUEEZE');
+    if (predictive.rsRankDelta != null && predictive.rsRankDelta >= 10) flags.push('RS_ACCELERATING');
+    if (predictive.rsRankDelta != null && predictive.rsRankDelta <= -10) flags.push('RS_DECELERATING');
+  }
+
   return flags;
+}
+
+/**
+ * Compute predictive technical data from price bars.
+ */
+export function computePredictiveTechnicals(
+  bars: PriceBar[],
+  prevRsRank3m: number | null,
+  currentRsRank3m: number | null,
+): PredictiveTechnicalData {
+  const closes = bars.map((b) => b.close);
+
+  return {
+    bollinger: computeBollingerBands(closes),
+    rsiDivergence: detectRSIDivergence(bars),
+    obvSlope: computeOBVSlope(bars),
+    volumeDryUp: detectVolumeDryUp(bars),
+    atrPercentile: computeATRPercentile(bars),
+    rsRankDelta: prevRsRank3m != null && currentRsRank3m != null
+      ? currentRsRank3m - prevRsRank3m
+      : null,
+  };
 }
 
 export type SmaCrossoverType = 'golden_cross' | 'death_cross';

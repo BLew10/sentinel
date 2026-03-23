@@ -12,7 +12,7 @@ async function getScreenerData(activeSignals: Record<string, ActiveSignal[]>) {
     .from('stocks')
     .select(`
       symbol, name, sector, market_cap,
-      sentinel_scores(sentinel_score, technical_score, fundamental_score, earnings_ai_score, insider_score, institutional_score, options_flow_score, rank, percentile),
+      sentinel_scores(sentinel_score, technical_score, fundamental_score, earnings_ai_score, insider_score, institutional_score, options_flow_score, rank, percentile, flags),
       technical_signals(rsi_14, price_vs_sma50, price_vs_sma200, pct_from_52w_high, pct_from_52w_low, volume_ratio_50d, rs_rank_3m, rs_rank_6m, sma_50, sma_150, sma_200),
       fundamentals(pe_ratio, revenue_growth_yoy, earnings_growth_yoy, revenue_growth_qoq, earnings_growth_qoq, gross_margin, net_margin),
       insider_signals(num_buyers_30d, num_sellers_30d, net_buy_value_30d)
@@ -66,6 +66,7 @@ async function getScreenerData(activeSignals: Record<string, ActiveSignal[]>) {
         num_buyers_30d: insider?.num_buyers_30d ?? null,
         num_sellers_30d: insider?.num_sellers_30d ?? null,
         net_buy_value_30d: insider?.net_buy_value_30d ?? null,
+        flags: (scores as Record<string, unknown>)?.flags as string[] ?? [],
         active_signals: activeSignals[row.symbol] ?? [],
       };
     })

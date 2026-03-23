@@ -1,4 +1,13 @@
-import type { PriceBar, MACDResult, FiftyTwoWeekRange, VolumeAnomaly, PriceSpikeReversal } from './utils/types';
+import type {
+  PriceBar,
+  MACDResult,
+  FiftyTwoWeekRange,
+  VolumeAnomaly,
+  PriceSpikeReversal,
+  BollingerBands,
+  RSIDivergence,
+  VolumeDryUp,
+} from './utils/types';
 
 /**
  * All indicator functions expect prices sorted oldest-first (chronological).
@@ -382,4 +391,254 @@ export function detectPriceSpikeReversal(
   }
 
   return bestSpike;
+}
+
+// ── PREDICTIVE INDICATORS ──────────────────────────────────
+
+/**
+ * Bollinger Bands with squeeze detection.
+ * Squeeze = band width < 2% of middle band price, predicting imminent volatility expansion.
+ */
+export function computeBollingerBands(
+  closes: number[],
+  period = 20,
+  stdDevMultiplier = 2,
+): BollingerBands | null {
+  if (closes.length < period) return null;
+
+  const slice = closes.slice(-period);
+  const middle = slice.reduce((s, v) => s + v, 0) / period;
+  if (middle <= 0) return null;
+
+  const variance = slice.reduce((s, v) => s + (v - middle) ** 2, 0) / period;
+  const stdDev = Math.sqrt(variance);
+
+  const upper = middle + stdDevMultiplier * stdDev;
+  const lower = middle - stdDevMultiplier * stdDev;
+  const width = (upper - lower) / middle;
+  const currentPrice = closes[closes.length - 1];
+  const pct_b = upper !== lower ? (currentPrice - lower) / (upper - lower) : 0.5;
+
+  return {
+    upper,
+    middle,
+    lower,
+    width,
+    pct_b,
+    is_squeeze: width < 0.02,
+  };
+}
+
+/**
+ * On-Balance Volume: cumulative volume where up-days add and down-days subtract.
+ * Returns the full OBV series for trend analysis.
+ */
+export function computeOBV(bars: PriceBar[]): number[] {
+  if (bars.length < 2) return [];
+
+  const obv: number[] = [0];
+  for (let i = 1; i < bars.length; i++) {
+    const prev = obv[obv.length - 1];
+    if (bars[i].close > bars[i - 1].close) {
+      obv.push(prev + bars[i].volume);
+    } else if (bars[i].close < bars[i - 1].close) {
+      obv.push(prev - bars[i].volume);
+    } else {
+      obv.push(prev);
+    }
+  }
+  return obv;
+}
+
+/**
+ * OBV slope over a lookback period, normalized to a -1..+1 range.
+ * Positive slope + flat/declining price = accumulation (predictive of upside).
+ */
+export function computeOBVSlope(bars: PriceBar[], lookback = 20): number | null {
+  const obv = computeOBV(bars);
+  if (obv.length < lookback) return null;
+
+  const recentOBV = obv.slice(-lookback);
+  const obvChange = recentOBV[recentOBV.length - 1] - recentOBV[0];
+  const avgVolume = bars.slice(-lookback).reduce((s, b) => s + b.volume, 0) / lookback;
+
+  if (avgVolume === 0) return null;
+  return Math.max(-1, Math.min(1, obvChange / (avgVolume * lookback)));
+}
+
+/**
+ * Detect RSI divergence: price makes new high/low but RSI does not confirm.
+ * Looks at 20-bar swing highs/lows within the last 60 bars.
+ */
+export function detectRSIDivergence(
+  bars: PriceBar[],
+  rsiPeriod = 14,
+): RSIDivergence | null {
+  if (bars.length < 60) return null;
+
+  const closes = bars.map((b) => b.close);
+  const rsiSeries = computeRSISeries(closes, rsiPeriod);
+  if (rsiSeries.length < 40) return null;
+
+  const lookback = Math.min(40, rsiSeries.length);
+  const startIdx = rsiSeries.length - lookback;
+  const recentBars = bars.slice(bars.length - lookback);
+  const recentRSI = rsiSeries.slice(startIdx);
+
+  // Find swing highs (local maxima over 5-bar window)
+  const swingHighs: Array<{ idx: number; price: number; rsi: number; date: string }> = [];
+  const swingLows: Array<{ idx: number; price: number; rsi: number; date: string }> = [];
+
+  for (let i = 2; i < recentBars.length - 2; i++) {
+    const price = recentBars[i].close;
+    if (price > recentBars[i - 1].close && price > recentBars[i - 2].close
+        && price > recentBars[i + 1].close && price > recentBars[i + 2].close) {
+      swingHighs.push({ idx: i, price, rsi: recentRSI[i], date: recentBars[i].date });
+    }
+    if (price < recentBars[i - 1].close && price < recentBars[i - 2].close
+        && price < recentBars[i + 1].close && price < recentBars[i + 2].close) {
+      swingLows.push({ idx: i, price, rsi: recentRSI[i], date: recentBars[i].date });
+    }
+  }
+
+  // Bearish divergence: higher price high + lower RSI high
+  if (swingHighs.length >= 2) {
+    const prev = swingHighs[swingHighs.length - 2];
+    const curr = swingHighs[swingHighs.length - 1];
+    if (curr.price > prev.price && curr.rsi < prev.rsi - 2) {
+      return {
+        type: 'bearish',
+        price_date_1: prev.date,
+        price_date_2: curr.date,
+        price_1: prev.price,
+        price_2: curr.price,
+        rsi_1: prev.rsi,
+        rsi_2: curr.rsi,
+      };
+    }
+  }
+
+  // Bullish divergence: lower price low + higher RSI low
+  if (swingLows.length >= 2) {
+    const prev = swingLows[swingLows.length - 2];
+    const curr = swingLows[swingLows.length - 1];
+    if (curr.price < prev.price && curr.rsi > prev.rsi + 2) {
+      return {
+        type: 'bullish',
+        price_date_1: prev.date,
+        price_date_2: curr.date,
+        price_1: prev.price,
+        price_2: curr.price,
+        rsi_1: prev.rsi,
+        rsi_2: curr.rsi,
+      };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Compute full RSI series (not just the latest value).
+ */
+function computeRSISeries(closes: number[], period = 14): number[] {
+  if (closes.length < period + 1) return [];
+
+  let avgGain = 0;
+  let avgLoss = 0;
+
+  for (let i = 1; i <= period; i++) {
+    const change = closes[i] - closes[i - 1];
+    if (change > 0) avgGain += change;
+    else avgLoss += Math.abs(change);
+  }
+
+  avgGain /= period;
+  avgLoss /= period;
+
+  const series: number[] = [];
+  series.push(avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss));
+
+  for (let i = period + 1; i < closes.length; i++) {
+    const change = closes[i] - closes[i - 1];
+    if (change > 0) {
+      avgGain = (avgGain * (period - 1) + change) / period;
+      avgLoss = (avgLoss * (period - 1)) / period;
+    } else {
+      avgGain = (avgGain * (period - 1)) / period;
+      avgLoss = (avgLoss * (period - 1) + Math.abs(change)) / period;
+    }
+    series.push(avgLoss === 0 ? 100 : 100 - 100 / (1 + avgGain / avgLoss));
+  }
+
+  return series;
+}
+
+/**
+ * Volume dry-up: consecutive days where volume is well below average,
+ * often combined with a tight price range. Predicts imminent breakout.
+ */
+export function detectVolumeDryUp(bars: PriceBar[]): VolumeDryUp | null {
+  if (bars.length < 55) return null;
+
+  const avgVolume50 = bars.slice(-51, -1).reduce((s, b) => s + b.volume, 0) / 50;
+  if (avgVolume50 === 0) return null;
+
+  let consecutiveLow = 0;
+  for (let i = bars.length - 1; i >= bars.length - 20 && i >= 0; i--) {
+    if (bars[i].volume / avgVolume50 < 0.5) {
+      consecutiveLow++;
+    } else {
+      break;
+    }
+  }
+
+  if (consecutiveLow < 5) return null;
+
+  const recentSlice = bars.slice(-consecutiveLow);
+  const highs = recentSlice.map((b) => b.high);
+  const lows = recentSlice.map((b) => b.low);
+  const rangeHigh = Math.max(...highs);
+  const rangeLow = Math.min(...lows);
+  const priceRangePct = rangeLow > 0 ? (rangeHigh - rangeLow) / rangeLow : 0;
+
+  const avgRatio = recentSlice.reduce((s, b) => s + b.volume / avgVolume50, 0)
+    / recentSlice.length;
+
+  return {
+    consecutive_low_volume_days: consecutiveLow,
+    avg_ratio: Math.round(avgRatio * 100) / 100,
+    price_range_pct: Math.round(priceRangePct * 10000) / 100,
+  };
+}
+
+/**
+ * ATR percentile: where current ATR sits relative to its own history.
+ * Low percentile = volatility squeeze (predictive of expansion).
+ */
+export function computeATRPercentile(bars: PriceBar[], atrPeriod = 14, historyLength = 100): number | null {
+  if (bars.length < historyLength + atrPeriod) return null;
+
+  const atrValues: number[] = [];
+  for (let end = atrPeriod + 1; end <= bars.length; end++) {
+    const slice = bars.slice(end - atrPeriod - 1, end);
+    const trueRanges: number[] = [];
+    for (let i = 1; i < slice.length; i++) {
+      const tr = Math.max(
+        slice[i].high - slice[i].low,
+        Math.abs(slice[i].high - slice[i - 1].close),
+        Math.abs(slice[i].low - slice[i - 1].close),
+      );
+      trueRanges.push(tr);
+    }
+    atrValues.push(trueRanges.reduce((s, v) => s + v, 0) / trueRanges.length);
+  }
+
+  if (atrValues.length < historyLength) return null;
+
+  const currentATR = atrValues[atrValues.length - 1];
+  const historicalATR = atrValues.slice(-historyLength);
+  const below = historicalATR.filter((v) => v < currentATR).length;
+
+  return Math.round((below / historicalATR.length) * 100);
 }

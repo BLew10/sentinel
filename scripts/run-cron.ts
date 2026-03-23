@@ -1,13 +1,14 @@
 import 'dotenv/config';
 import { format, subDays } from 'date-fns';
 import { getSupabaseServerClient } from '../lib/db';
-import { getStockPrices, FDApiError } from '../lib/financial-datasets';
+import { getStockPrices, getAnalystEstimates, getEarnings, getNews, FDApiError } from '../lib/financial-datasets';
 import { computeAllIndicators, computePercentileRank } from '../lib/indicators';
 import { computeAndStoreScores } from '../lib/scoring';
 import { detectAlerts, recordAlert } from '../lib/alerts';
 import { sendAlertToDiscord } from '../lib/discord-send';
 import { snapshotSignal } from '../lib/signals';
 import { detectSmaCrossover } from '../lib/analyzers/technical';
+import { computeEstimateRevisionScore } from '../lib/analyzers/estimates';
 import { computeAndStoreSectorSignals } from '../lib/sectors';
 import {
   createPipelineRun, startStep, finishStep, logStepError,
@@ -78,6 +79,96 @@ async function fetchPrices(run: ReturnType<typeof createPipelineRun>) {
 
   finishStep(run, 'fetch_prices', errors > 0 ? 'error' : 'success', {
     inserted, errors, skipped, stocks: stocks.length,
+  });
+}
+
+async function fetchForwardData(run: ReturnType<typeof createPipelineRun>) {
+  startStep(run, 'fetch_forward_data');
+  console.log('\n[2/6] Fetching forward-looking data (estimates, earnings, news)...');
+
+  const db = getSupabaseServerClient();
+  const { data: stocks } = await db.from('stocks').select('symbol').eq('is_active', true).order('symbol');
+  if (!stocks) {
+    finishStep(run, 'fetch_forward_data', 'skipped', { stocks: 0 });
+    return;
+  }
+
+  let estimatesFetched = 0;
+  let earningsFetched = 0;
+  let newsFetched = 0;
+  let errors = 0;
+
+  for (let i = 0; i < stocks.length; i++) {
+    const { symbol } = stocks[i];
+    try {
+      const [estimates, earnings, news] = await Promise.all([
+        getAnalystEstimates(symbol, { period: 'quarterly', limit: 4 }).catch(() => []),
+        getEarnings(symbol).catch(() => null),
+        getNews(symbol, { limit: 10 }).catch(() => []),
+      ]);
+
+      if (estimates.length > 0) {
+        const latestPrice = await db
+          .from('daily_prices')
+          .select('close')
+          .eq('symbol', symbol)
+          .order('date', { ascending: false })
+          .limit(1)
+          .single();
+
+        const currentPrice = latestPrice.data?.close != null ? Number(latestPrice.data.close) : null;
+
+        const revisionResult = computeEstimateRevisionScore({
+          currentEstimates: estimates,
+          priorEstimates: [],
+          earnings,
+          currentPrice,
+        });
+
+        if (revisionResult.forward_pe != null) {
+          await db.from('fundamentals').update({ forward_pe: revisionResult.forward_pe }).eq('symbol', symbol);
+        }
+
+        estimatesFetched++;
+      }
+
+      if (earnings) earningsFetched++;
+
+      if (news.length > 0) {
+        const recentNews = news.filter((n) => {
+          const daysAgo = (Date.now() - new Date(n.published_at).getTime()) / 86_400_000;
+          return daysAgo <= 7;
+        });
+
+        await db.from('news_sentiment').upsert({
+          symbol,
+          num_articles_7d: recentNews.length,
+          top_headline: news[0]?.title ?? null,
+          sentiment_score: null,
+          sentiment_label: null,
+          sentiment_velocity: null,
+          ai_summary: null,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'symbol' });
+
+        newsFetched++;
+      }
+
+      if ((i + 1) % 50 === 0) console.log(`  [${i + 1}/${stocks.length}] est=${estimatesFetched} earn=${earningsFetched} news=${newsFetched}`);
+    } catch (err) {
+      errors++;
+      logStepError(run, 'fetch_forward_data', symbol, err instanceof Error ? err.message : String(err));
+      if (err instanceof FDApiError && err.category === 'circuit_open') break;
+    }
+  }
+
+  console.log(`  Done: estimates=${estimatesFetched}, earnings=${earningsFetched}, news=${newsFetched}, errors=${errors}`);
+  finishStep(run, 'fetch_forward_data', errors > 0 ? 'error' : 'success', {
+    estimates: estimatesFetched,
+    earnings: earningsFetched,
+    news: newsFetched,
+    errors,
+    stocks: stocks.length,
   });
 }
 
@@ -312,11 +403,14 @@ async function main() {
 
   if (!arg || arg === 'all') {
     await fetchPrices(run);
+    await fetchForwardData(run);
     await computeScores(run);
     await runAlerts(run);
     await computeSectors(run);
   } else if (arg === 'prices') {
     await fetchPrices(run);
+  } else if (arg === 'forward') {
+    await fetchForwardData(run);
   } else if (arg === 'scores') {
     await computeScores(run);
   } else if (arg === 'alerts') {
@@ -324,7 +418,7 @@ async function main() {
   } else if (arg === 'sectors') {
     await computeSectors(run);
   } else {
-    console.error(`Unknown job "${arg}". Available: prices, scores, alerts, sectors, all`);
+    console.error(`Unknown job "${arg}". Available: prices, forward, scores, alerts, sectors, all`);
     process.exit(1);
   }
 
