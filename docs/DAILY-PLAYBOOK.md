@@ -289,3 +289,71 @@ Before entering, define:
 6. **Not checking AI analysis freshness** — Claude's analysis is a snapshot. If `analyzed_at` is more than 7 days old, the analysis may not reflect recent developments.
 
 7. **Fighting the trend** — Value reversals and RSI divergences are powerful, but they require patience. Don't size up until price confirms the reversal. The market can stay irrational longer than you can stay solvent.
+
+---
+
+## Using Claude as Your Analyst (No API Credits)
+
+Sentinel includes a built-in briefing system that exports today's data in a format optimized for LLMs. You can use Claude (claude.ai), ChatGPT, or any AI chat to analyze the data — no API credits needed.
+
+### One-Time Setup
+
+1. Go to [claude.ai](https://claude.ai) and create a new **Project** called "Sentinel Trading"
+2. Upload this file (`docs/DAILY-PLAYBOOK.md`) as **project knowledge** — Claude will use it as permanent context for every conversation in the project
+3. That's it. The playbook teaches Claude how to interpret Sentinel data.
+
+### Daily Workflow
+
+1. Open Sentinel and go to **Briefing** in the sidebar (or visit `/briefing`)
+2. Click **Copy Briefing** — this copies all of today's data (setups, divergences, scores, alerts, signal performance)
+3. Open your Claude project and start a new chat
+4. Paste the briefing data
+5. Copy the suggested prompt from the Briefing page (or use the one below) and send it
+
+### The Prompt
+
+```
+You are my trading analyst. I've pasted today's Sentinel platform briefing data below.
+
+Using the data, give me:
+
+1. **Today's Top 3 Plays** — The 3 best risk/reward setups from the active setups
+   and divergences. For each:
+   - Ticker and setup type
+   - Why this is actionable NOW (not just interesting)
+   - Specific entry trigger to watch for
+   - Where to set a stop loss
+   - Realistic profit target and timeframe
+   - Conviction level (low/medium/high) and why
+
+2. **What to Avoid** — Any stocks that look like traps (confirmatory signals only,
+   move already done, poor risk/reward)
+
+3. **Market Context Read** — Based on SPY, setup counts, and signal performance:
+   - Is the current market favoring any particular strategy type?
+   - Should I be aggressive or cautious today?
+
+4. **Watchlist Additions** — 2-3 stocks not yet actionable but worth monitoring,
+   with the specific trigger that would make them actionable
+
+Rules:
+- Prioritize PREDICTIVE signals over confirmatory ones
+- Higher conviction setups (3+ dots) are stronger
+- Divergences represent the highest edge
+- Consider which signal types have been profitable recently
+- Be specific with entries and exits
+```
+
+### API Access
+
+The briefing is also available as a raw API endpoint:
+
+```
+GET /api/briefing?token=YOUR_BRIEFING_TOKEN
+```
+
+- Returns markdown by default
+- Add `&format=json` for structured JSON
+- Supports `Authorization: Bearer YOUR_BRIEFING_TOKEN` header as an alternative
+
+Set your token in `.env` as `BRIEFING_TOKEN`. This allows you to integrate with any tool that can fetch a URL — including Claude's web browsing, custom scripts, or automation workflows.

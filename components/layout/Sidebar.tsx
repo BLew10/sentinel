@@ -20,6 +20,7 @@ const NAV_ITEMS = [
   { href: '/watchlist', label: 'Watchlist', icon: '★' },
   { href: '/signals', label: 'Signals', icon: '⚡' },
   { href: '/guide', label: 'Guide', icon: '◈' },
+  { href: '/briefing', label: 'Briefing', icon: '⊕' },
 ];
 
 export function Sidebar() {
